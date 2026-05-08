@@ -175,15 +175,18 @@ def _summarize(logs: List[Dict[str, Any]], extra: Dict[str, Any] | None = None) 
 # PPO-only evaluation
 # =============================================================================
 
-def eval_ppo(model_path: str, n_episodes: int) -> tuple[Dict[str, Any], List[Dict[str, Any]]]:
+def eval_ppo(
+    model_path: str, n_episodes: int, seed_offset: int = 0
+) -> tuple[Dict[str, Any], List[Dict[str, Any]]]:
     env = FourRoomsEnv()
     model = PPO.load(model_path, device="cuda" if torch.cuda.is_available() else "cpu")
     model.policy.set_training_mode(False)
 
     logs = []
     for ep in range(n_episodes):
-        obs, _ = env.reset(seed=ep)
+        obs, _ = env.reset(seed=seed_offset + ep)
         done, ep_reward, ep_len = False, 0.0, 0
+        t0 = time.time()
         while not done:
             action, _ = model.predict(obs, deterministic=True)
             obs, reward, terminated, truncated, _ = env.step(int(action))
@@ -191,10 +194,11 @@ def eval_ppo(model_path: str, n_episodes: int) -> tuple[Dict[str, Any], List[Dic
             ep_len += 1
             done = terminated or truncated
         logs.append({
-            "episode": ep + 1,
-            "reward":  ep_reward,
-            "length":  ep_len,
-            "result":  "goal" if ep_reward > 0 else "timeout" if not terminated else "failure",
+            "episode":        ep + 1,
+            "reward":         ep_reward,
+            "length":         ep_len,
+            "result":         "goal" if ep_reward > 0 else "timeout" if not terminated else "failure",
+            "episode_time_s": time.time() - t0,
         })
 
     env.close()
@@ -206,16 +210,17 @@ def eval_ppo(model_path: str, n_episodes: int) -> tuple[Dict[str, Any], List[Dic
 # =============================================================================
 
 def eval_slm_only(
-    slm_cfg: Dict[str, Any], n_episodes: int
+    slm_cfg: Dict[str, Any], n_episodes: int, seed_offset: int = 0
 ) -> tuple[Dict[str, Any], List[Dict[str, Any]]]:
     env = FourRoomsEnv()
     slm = load_slm(slm_cfg)
 
     logs = []
     for ep in range(n_episodes):
-        obs, _ = env.reset(seed=ep)
+        obs, _ = env.reset(seed=seed_offset + ep)
         done, ep_reward, ep_len = False, 0.0, 0
         invalid_actions = 0
+        t0 = time.time()
         while not done:
             prompt = build_prompt(env, ppo_action=2)
             output = slm.generate(prompt, DECODING)
@@ -233,6 +238,7 @@ def eval_slm_only(
             "length":               ep_len,
             "result":               "goal" if ep_reward > 0 else "timeout" if not terminated else "failure",
             "invalid_action_rate":  invalid_actions / ep_len if ep_len > 0 else 0.0,
+            "episode_time_s":       time.time() - t0,
         })
 
     env.close()
@@ -371,6 +377,26 @@ def wandb_log_episodes(run, logs: List[Dict[str, Any]]) -> None:
     run.log({"episodes": table})
 
 
+def wandb_log_optuna_trials(run, study: "optuna.Study") -> None:
+    rows = [
+        {
+            "trial":     t.number,
+            "threshold": t.params["threshold"],
+            "reward":    t.value,
+            "state":     str(t.state),
+        }
+        for t in study.trials
+        if t.value is not None
+    ]
+    if not rows:
+        return
+    table = wandb.Table(
+        columns=list(rows[0].keys()),
+        data=[[r[k] for k in rows[0].keys()] for r in rows],
+    )
+    run.log({"optuna_trials": table})
+
+
 # =============================================================================
 # CLI
 # =============================================================================
@@ -427,7 +453,7 @@ def main() -> None:
                 "n_episodes": args.n_episodes,
             },
         ):
-            summary, logs = eval_ppo(model_path, n_episodes=args.n_episodes)
+            summary, logs = eval_ppo(model_path, n_episodes=args.n_episodes, seed_offset=N_EVAL_EPISODES)
             print(summary)
             wandb_log_summary(wandb.run, summary)
             wandb_log_episodes(wandb.run, logs)
@@ -458,7 +484,7 @@ def main() -> None:
                     "n_episodes": args.n_episodes,
                 },
             ):
-                summary, logs = eval_slm_only(cfg, n_episodes=args.n_episodes)
+                summary, logs = eval_slm_only(cfg, n_episodes=args.n_episodes, seed_offset=N_EVAL_EPISODES)
                 print(summary)
                 wandb_log_summary(wandb.run, summary)
                 wandb_log_episodes(wandb.run, logs)
@@ -477,6 +503,7 @@ def main() -> None:
                 "n_eval_episodes": args.n_eval_episodes,
             }
 
+            study = None
             if args.threshold is not None:
                 best_threshold = args.threshold
                 print(f"  ASK fixed τ={best_threshold:.4f} ({tag})")
@@ -537,6 +564,8 @@ def main() -> None:
                 print(summary)
                 wandb_log_summary(wandb.run, summary)
                 wandb_log_episodes(wandb.run, logs)
+                if study is not None:
+                    wandb_log_optuna_trials(wandb.run, study)
                 save_summary(summary, RESULTS_DIR / f"ask_{tag}_results{file_tag}.json")
                 save_csv(logs, RESULTS_DIR / f"ask_{tag}_episodes{file_tag}.csv")
 
