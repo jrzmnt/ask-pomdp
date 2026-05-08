@@ -30,12 +30,19 @@ import numpy as np
 import optuna
 import torch
 import wandb
+from rich import box
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
 from stable_baselines3 import PPO
+from tqdm import tqdm
 
 from ask.envs.fourrooms import DIR_TO_STR, FourRoomsEnv
 from ask.slm.model import load_slm
 from ask.uncertainty.entropy import compute_mc_uncertainties
 from ask.utils.seed import set_seed
+
+console = Console()
 
 
 # =============================================================================
@@ -171,6 +178,18 @@ def _summarize(logs: List[Dict[str, Any]], extra: Dict[str, Any] | None = None) 
     return summary
 
 
+def _print_summary_table(title: str, summary: Dict[str, Any]) -> None:
+    table = Table(title=title, box=box.SIMPLE_HEAD, show_header=True, min_width=40)
+    table.add_column("Metric", style="cyan", no_wrap=True)
+    table.add_column("Value", style="green", justify="right")
+    for k, v in summary.items():
+        if isinstance(v, float):
+            table.add_row(k, f"{v:.4f}" if not (v != v) else "—")  # nan → —
+        else:
+            table.add_row(k, str(v))
+    console.print(table)
+
+
 # =============================================================================
 # PPO-only evaluation
 # =============================================================================
@@ -183,7 +202,7 @@ def eval_ppo(
     model.policy.set_training_mode(False)
 
     logs = []
-    for ep in range(n_episodes):
+    for ep in tqdm(range(n_episodes), desc="PPO eval", unit="ep", leave=False):
         obs, _ = env.reset(seed=seed_offset + ep)
         done, ep_reward, ep_len = False, 0.0, 0
         t0 = time.time()
@@ -215,8 +234,9 @@ def eval_slm_only(
     env = FourRoomsEnv()
     slm = load_slm(slm_cfg)
 
+    model_tag = short_model_name(slm_cfg["model"])
     logs = []
-    for ep in range(n_episodes):
+    for ep in tqdm(range(n_episodes), desc=f"SLM {model_tag}", unit="ep", leave=False):
         obs, _ = env.reset(seed=seed_offset + ep)
         done, ep_reward, ep_len = False, 0.0, 0
         invalid_actions = 0
@@ -269,7 +289,7 @@ def eval_ask(
     env = FourRoomsEnv()
     logs: List[Dict[str, Any]] = []
 
-    for ep in range(n_episodes):
+    for ep in tqdm(range(n_episodes), desc=f"ASK τ={threshold:.2f}", unit="ep", leave=False):
         obs, _ = env.reset(seed=seed_offset + ep)
         done, ep_reward, steps = False, 0.0, 0
         slm_called, slm_valid, slm_overwrites = 0, 0, 0
@@ -441,7 +461,7 @@ def main() -> None:
     # PPO-only baseline
     # -------------------------------------------------------------------------
     if args.mode in ("ppo", "all"):
-        print("\n=== PPO-only ===")
+        console.rule("[bold cyan]PPO baseline[/bold cyan]")
         with wandb.init(
             project=WANDB_PROJECT,
             name=f"eval_ppo{file_tag}",
@@ -454,7 +474,7 @@ def main() -> None:
             },
         ):
             summary, logs = eval_ppo(model_path, n_episodes=args.n_episodes, seed_offset=N_EVAL_EPISODES)
-            print(summary)
+            _print_summary_table("PPO results", summary)
             wandb_log_summary(wandb.run, summary)
             wandb_log_episodes(wandb.run, logs)
             save_summary(summary, RESULTS_DIR / f"ppo_results{file_tag}.json")
@@ -467,11 +487,10 @@ def main() -> None:
         model_name = QWEN_MODELS[key]
         tag = short_model_name(model_name)
         cfg = slm_cfg_for(model_name)
-        print(f"\n=== {tag} ===")
 
         # --- SLM-only ---
         if args.mode in ("slm", "all"):
-            print(f"  SLM-only ({tag})")
+            console.rule(f"[bold cyan]SLM-only — {tag}[/bold cyan]")
             with wandb.init(
                 project=WANDB_PROJECT,
                 name=f"eval_slm_{tag}{file_tag}",
@@ -485,7 +504,7 @@ def main() -> None:
                 },
             ):
                 summary, logs = eval_slm_only(cfg, n_episodes=args.n_episodes, seed_offset=N_EVAL_EPISODES)
-                print(summary)
+                _print_summary_table(f"SLM {tag} results", summary)
                 wandb_log_summary(wandb.run, summary)
                 wandb_log_episodes(wandb.run, logs)
                 save_summary(summary, RESULTS_DIR / f"slm_{tag}_results{file_tag}.json")
@@ -493,7 +512,6 @@ def main() -> None:
 
         # --- ASK ---
         if args.mode in ("ask", "all"):
-            # Base config shared by all ASK runs
             wandb_cfg = {
                 "experiment": f"ask_{args.tag}" if args.tag else "ask_main",
                 "env": "MiniGrid-FourRooms-v0",
@@ -506,11 +524,11 @@ def main() -> None:
             study = None
             if args.threshold is not None:
                 best_threshold = args.threshold
-                print(f"  ASK fixed τ={best_threshold:.4f} ({tag})")
+                console.rule(f"[bold cyan]ASK — {tag}  τ={best_threshold:.4f} (fixed)[/bold cyan]")
                 wandb_cfg["threshold"] = best_threshold
                 wandb_cfg["threshold_source"] = "fixed"
             else:
-                print(f"  Optuna threshold search ({tag}, {args.n_optuna_trials} trials)")
+                console.rule(f"[bold cyan]ASK — {tag}  Optuna ({args.n_optuna_trials} trials)[/bold cyan]")
                 study_name = f"ask_{tag}{file_tag}"
                 study = optuna.create_study(
                     direction="maximize",
@@ -521,15 +539,21 @@ def main() -> None:
                 study.optimize(
                     lambda t: objective(t, model_path, cfg, args.n_eval_episodes, args.n_mc),
                     n_trials=args.n_optuna_trials,
+                    show_progress_bar=True,
                 )
                 best_threshold = study.best_params["threshold"]
-                print(f"  Best τ={best_threshold:.4f} | eval reward={study.best_value:.4f}")
+                console.print(
+                    Panel(
+                        f"Best τ = [green]{best_threshold:.4f}[/green]  |  "
+                        f"eval reward = [green]{study.best_value:.4f}[/green]",
+                        title="Optuna result", border_style="cyan",
+                    )
+                )
                 wandb_cfg["threshold"] = best_threshold
                 wandb_cfg["threshold_source"] = "optuna"
                 wandb_cfg["optuna_best_reward"] = study.best_value
                 wandb_cfg["optuna_n_trials"] = args.n_optuna_trials
 
-            print(f"  ASK final eval ({tag}, τ={best_threshold:.4f})")
             with wandb.init(
                 project=WANDB_PROJECT,
                 name=f"eval_ask_{tag}{file_tag}",
@@ -561,7 +585,7 @@ def main() -> None:
                     "OR_std":        float(np.std([l["OR"] for l in logs])),
                     "slm_valid_rate": float(np.mean([l["slm_valid_rate"] for l in logs])),
                 })
-                print(summary)
+                _print_summary_table(f"ASK {tag} results", summary)
                 wandb_log_summary(wandb.run, summary)
                 wandb_log_episodes(wandb.run, logs)
                 if study is not None:
