@@ -216,3 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Project documentation and resources
+CLAUDE.md
+When to ASK: Uncertainty-Gated Language Assistance for Reinforcement Learning.pdf
