@@ -1,41 +1,54 @@
 #!/usr/bin/env bash
 # Ablation: number of MC Dropout forward passes (N).
 #
-# Uses the best τ found by Optuna (reads from results/ask_qwen_1.5b_results.json).
-# Sweeps N ∈ {5, 10, 20, 30, 50}.
-# Shows the trade-off between uncertainty quality and inference cost.
+# Uses the best τ found by Optuna (reads from results/thresholds.json).
+# Sweeps N ∈ {5, 10, 20, 30, 50} for one representative per model family:
+#   - Qwen2.5-1.5B
+#   - Qwen3.5-2B
 #
-# Prerequisite: run eval_ask.sh first to obtain the best threshold.
+# Prerequisite: run eval_ask.sh and eval_ask_qwen3.sh first.
 #
-# Output: results/ask_qwen_1.5b_results_mc{N}.json
+# Output: results/ask_*_results_mc{N}.json
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 source .venv/bin/activate
 
-RESULT_FILE="results/ask_qwen_1.5b_results.json"
+THRESHOLD_FILE="results/thresholds.json"
 
-if [ ! -f "${RESULT_FILE}" ]; then
-    echo "[ablation_mc_samples] ERROR: ${RESULT_FILE} not found."
-    echo "  Run scripts/eval_ask.sh first to obtain the best threshold."
+if [ ! -f "${THRESHOLD_FILE}" ]; then
+    echo "[ablation_mc_samples] ERROR: ${THRESHOLD_FILE} not found."
+    echo "  Run eval_ask.sh and eval_ask_qwen3.sh first."
     exit 1
 fi
 
-BEST_TAU=$(python -c "import json; d=json.load(open('${RESULT_FILE}')); print(d['threshold'])")
-echo "[ablation_mc_samples] Best τ = ${BEST_TAU} (from ${RESULT_FILE})"
-echo "[ablation_mc_samples] Sweeping N MC samples for Qwen 1.5B"
+for SLM in 1.5b qwen35-2b; do
+    # Resolve HF model name → look up threshold
+    if [ "${SLM}" = "1.5b" ]; then
+        MODEL_KEY="Qwen/Qwen2.5-1.5B-Instruct"
+    else
+        MODEL_KEY="Qwen/Qwen3.5-2B"
+    fi
 
-for N in 5 10 20 30 50; do
+    BEST_TAU=$(python -c "
+import json
+d = json.load(open('${THRESHOLD_FILE}'))
+print(d['${MODEL_KEY}']['threshold'])
+")
     echo ""
-    echo "  N = ${N}"
-    python eval_ppo_slm.py \
-        --mode ask \
-        --slm 1.5b \
-        --threshold "${BEST_TAU}" \
-        --n-mc "${N}" \
-        --tag "mc${N}" \
-        --wandb-group ablation_mc_samples
+    echo "=== Model: ${SLM}  τ=${BEST_TAU} ==="
+
+    for N in 5 10 20 30 50; do
+        echo "  N = ${N}"
+        python eval_ppo_slm.py \
+            --mode ask \
+            --slm "${SLM}" \
+            --threshold "${BEST_TAU}" \
+            --n-mc "${N}" \
+            --tag "mc${N}" \
+            --wandb-group ablation_mc_samples
+    done
 done
 
 echo ""
-echo "[ablation_mc_samples] Done → results/ask_qwen_1.5b_results_mc*.json"
+echo "[ablation_mc_samples] Done → results/ask_*_results_mc*.json"

@@ -52,8 +52,10 @@ console = Console()
 WANDB_PROJECT = "ask-pomdp"
 
 QWEN_MODELS = {
-    "0.5b": "Qwen/Qwen2.5-0.5B-Instruct",
-    "1.5b": "Qwen/Qwen2.5-1.5B-Instruct",
+    "0.5b":        "Qwen/Qwen2.5-0.5B-Instruct",
+    "1.5b":        "Qwen/Qwen2.5-1.5B-Instruct",
+    "qwen35-0.8b": "Qwen/Qwen3.5-0.8B",
+    "qwen35-2b":   "Qwen/Qwen3.5-2B",
 }
 
 DECODING = {"max_tokens": 15}
@@ -78,8 +80,7 @@ Your 7×7 egocentric view (you are at row 6, col 3, facing toward row 0):
 {grid}
 
 Facing: {direction}
-PPO autopilot suggests: {ppo_action}
-
+{ppo_line}
 Legend: A=you  .=floor  #=wall  D=door  G=goal  ?=unseen
 
 Actions: TURN_LEFT  TURN_RIGHT  FORWARD
@@ -95,11 +96,14 @@ Output EXACTLY one word: TURN_LEFT or TURN_RIGHT or FORWARD\
 """
 
 
-def build_prompt(env: FourRoomsEnv, ppo_action: int) -> str:
+def build_prompt(env: FourRoomsEnv, ppo_action: int | None = None) -> str:
     grid = env.render_view_ascii()
     direction = DIR_TO_STR.get(env.agent_dir, "UNKNOWN")
-    ppo_str = ACTIONS_STR[ppo_action] if ppo_action < 3 else "UNKNOWN"
-    return PROMPT_TEMPLATE.format(grid=grid, direction=direction, ppo_action=ppo_str)
+    ppo_line = (
+        f"PPO autopilot suggests: {ACTIONS_STR[ppo_action]}\n"
+        if ppo_action is not None else ""
+    )
+    return PROMPT_TEMPLATE.format(grid=grid, direction=direction, ppo_line=ppo_line)
 
 
 # =============================================================================
@@ -128,10 +132,17 @@ def set_torch_seed(seed: int) -> None:
 
 
 def short_model_name(model_name: str) -> str:
-    name = model_name.lower()
-    for tag in ["0.5b", "1.5b", "3b", "7b"]:
-        if tag in name:
-            return f"qwen_{tag}"
+    name = model_name.lower().replace("/", "-").replace("_", "-").replace(".", "")
+    for pattern, tag in [
+        ("qwen35-08b", "qwen35_0.8b"),
+        ("qwen35-2b",  "qwen35_2b"),
+        ("qwen25-05b", "qwen25_0.5b"),
+        ("qwen25-15b", "qwen25_1.5b"),
+        ("05b",        "qwen25_0.5b"),
+        ("15b",        "qwen25_1.5b"),
+    ]:
+        if pattern in name:
+            return tag
     return "qwen_unknown"
 
 
@@ -213,11 +224,16 @@ def eval_ppo(
             ep_len += 1
             done = terminated or truncated
         logs.append({
-            "episode":        ep + 1,
-            "reward":         ep_reward,
-            "length":         ep_len,
-            "result":         "goal" if ep_reward > 0 else "timeout" if not terminated else "failure",
-            "episode_time_s": time.time() - t0,
+            "episode":             ep + 1,
+            "seed":                seed_offset + ep,
+            "reward":              ep_reward,
+            "length":              ep_len,
+            "result":              "goal" if ep_reward > 0 else "timeout" if not terminated else "failure",
+            "IR":                  0.0,
+            "OR":                  0.0,
+            "slm_valid_rate":      0.0,
+            "invalid_action_rate": 0.0,
+            "episode_time_s":      time.time() - t0,
         })
 
     env.close()
@@ -242,7 +258,7 @@ def eval_slm_only(
         invalid_actions = 0
         t0 = time.time()
         while not done:
-            prompt = build_prompt(env, ppo_action=2)
+            prompt = build_prompt(env)
             output = slm.generate(prompt, DECODING)
             action = parse_action(output.text)
             if action is None:
@@ -252,13 +268,18 @@ def eval_slm_only(
             ep_reward += float(reward)
             ep_len += 1
             done = terminated or truncated
+        ep_invalid_rate = invalid_actions / ep_len if ep_len > 0 else 0.0
         logs.append({
-            "episode":              ep + 1,
-            "reward":               ep_reward,
-            "length":               ep_len,
-            "result":               "goal" if ep_reward > 0 else "timeout" if not terminated else "failure",
-            "invalid_action_rate":  invalid_actions / ep_len if ep_len > 0 else 0.0,
-            "episode_time_s":       time.time() - t0,
+            "episode":             ep + 1,
+            "seed":                seed_offset + ep,
+            "reward":              ep_reward,
+            "length":              ep_len,
+            "result":              "goal" if ep_reward > 0 else "timeout" if not terminated else "failure",
+            "IR":                  1.0,
+            "OR":                  float("nan"),  # no PPO reference in SLM-only
+            "slm_valid_rate":      1.0 - ep_invalid_rate,
+            "invalid_action_rate": ep_invalid_rate,
+            "episode_time_s":      time.time() - t0,
         })
 
     env.close()
@@ -292,7 +313,7 @@ def eval_ask(
     for ep in tqdm(range(n_episodes), desc=f"ASK τ={threshold:.2f}", unit="ep", leave=False):
         obs, _ = env.reset(seed=seed_offset + ep)
         done, ep_reward, steps = False, 0.0, 0
-        slm_called, slm_valid, slm_overwrites = 0, 0, 0
+        slm_called, slm_valid, slm_overwrites, slm_invalid = 0, 0, 0, 0
 
         t0 = time.time()
         while not done:
@@ -312,6 +333,8 @@ def eval_ask(
                     if slm_action != ppo_action:
                         ppo_action = slm_action
                         slm_overwrites += 1
+                else:
+                    slm_invalid += 1
 
             obs, reward, terminated, truncated, _ = env.step(ppo_action)
             ep_reward += reward
@@ -319,14 +342,16 @@ def eval_ask(
             done = terminated or truncated
 
         logs.append({
-            "episode":         ep + 1,
-            "reward":          ep_reward,
-            "length":          steps,
-            "result":          "goal" if ep_reward > 0 else "timeout" if not terminated else "failure",
-            "IR":              slm_called / steps if steps > 0 else 0.0,
-            "OR":              slm_overwrites / steps if steps > 0 else 0.0,
-            "slm_valid_rate":  slm_valid / steps if steps > 0 else 0.0,
-            "episode_time_s":  time.time() - t0,
+            "episode":             ep + 1,
+            "seed":                seed_offset + ep,
+            "reward":              ep_reward,
+            "length":              steps,
+            "result":              "goal" if ep_reward > 0 else "timeout" if not terminated else "failure",
+            "IR":                  slm_called / steps if steps > 0 else 0.0,
+            "OR":                  slm_overwrites / steps if steps > 0 else 0.0,
+            "slm_valid_rate":      slm_valid / slm_called if slm_called > 0 else 0.0,
+            "invalid_action_rate": slm_invalid / slm_called if slm_called > 0 else 0.0,
+            "episode_time_s":      time.time() - t0,
         })
 
     env.close()
@@ -384,6 +409,22 @@ def save_summary(data: Dict[str, Any], path: Path) -> None:
     print(f"  Saved → {path}")
 
 
+def save_threshold(model_name: str, study_name: str, threshold: float, reward: float) -> None:
+    path = RESULTS_DIR / "thresholds.json"
+    registry: Dict[str, Any] = {}
+    if path.exists():
+        with open(path) as f:
+            registry = json.load(f)
+    registry[model_name] = {
+        "threshold":    threshold,
+        "optuna_study": study_name,
+        "eval_reward":  reward,
+    }
+    with open(path, "w") as f:
+        json.dump(registry, f, indent=2)
+    console.print(f"  Threshold saved → {path}")
+
+
 def wandb_log_summary(run, data: Dict[str, Any]) -> None:
     run.summary.update(data)
     run.log(data)
@@ -424,7 +465,7 @@ def wandb_log_optuna_trials(run, study: "optuna.Study") -> None:
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Evaluate PPO / SLM / ASK on MiniGrid-FourRooms")
     p.add_argument("--mode", choices=["ppo", "slm", "ask", "all"], default="all")
-    p.add_argument("--slm", choices=["0.5b", "1.5b", "all"], default="all")
+    p.add_argument("--slm", choices=["0.5b", "1.5b", "qwen35-0.8b", "qwen35-2b", "all"], default="all")
     p.add_argument("--threshold", type=float, default=None,
                    help="Fixed τ — skips Optuna")
     p.add_argument("--n-mc", type=int, default=N_MC_SAMPLES, dest="n_mc")
@@ -545,14 +586,17 @@ def main() -> None:
                 console.print(
                     Panel(
                         f"Best τ = [green]{best_threshold:.4f}[/green]  |  "
-                        f"eval reward = [green]{study.best_value:.4f}[/green]",
+                        f"eval reward = [green]{study.best_value:.4f}[/green]  |  "
+                        f"study = [cyan]{study_name}[/cyan]",
                         title="Optuna result", border_style="cyan",
                     )
                 )
                 wandb_cfg["threshold"] = best_threshold
                 wandb_cfg["threshold_source"] = "optuna"
+                wandb_cfg["optuna_study_name"] = study_name
                 wandb_cfg["optuna_best_reward"] = study.best_value
                 wandb_cfg["optuna_n_trials"] = args.n_optuna_trials
+                save_threshold(model_name, study_name, best_threshold, study.best_value)
 
             with wandb.init(
                 project=WANDB_PROJECT,
@@ -576,14 +620,15 @@ def main() -> None:
                     torch.cuda.empty_cache()
 
                 summary = _summarize(logs, extra={
-                    "slm_model":     model_name,
-                    "threshold":     best_threshold,
-                    "n_mc_samples":  args.n_mc,
-                    "IR_mean":       float(np.mean([l["IR"] for l in logs])),
-                    "IR_std":        float(np.std([l["IR"] for l in logs])),
-                    "OR_mean":       float(np.mean([l["OR"] for l in logs])),
-                    "OR_std":        float(np.std([l["OR"] for l in logs])),
-                    "slm_valid_rate": float(np.mean([l["slm_valid_rate"] for l in logs])),
+                    "slm_model":          model_name,
+                    "threshold":          best_threshold,
+                    "n_mc_samples":       args.n_mc,
+                    "IR_mean":            float(np.mean([l["IR"] for l in logs])),
+                    "IR_std":             float(np.std([l["IR"] for l in logs])),
+                    "OR_mean":            float(np.mean([l["OR"] for l in logs])),
+                    "OR_std":             float(np.std([l["OR"] for l in logs])),
+                    "slm_valid_rate":     float(np.mean([l["slm_valid_rate"] for l in logs])),
+                    "invalid_action_rate": float(np.mean([l["invalid_action_rate"] for l in logs])),
                 })
                 _print_summary_table(f"ASK {tag} results", summary)
                 wandb_log_summary(wandb.run, summary)
