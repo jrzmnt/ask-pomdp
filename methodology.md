@@ -117,8 +117,8 @@ All aggregated metrics reported as mean ± std over 200 test episodes.
 | SLM-only | Qwen3-1.7B | 0.00 ± 0.00 | 0% | 1.00 | — |
 | ASK τ=0.55 | Qwen2.5-0.5B | 0.84 ± 0.29 | 89.5% | 0.14 | 0.10 |
 | ASK τ=0.92 | Qwen2.5-1.5B | 0.87 ± 0.24 | 93% | 0.03 | 0.00 |
-| ASK | Qwen3-0.6B | — | — | — | — |
-| ASK | Qwen3-1.7B | — | — | — | — |
+| ASK τ=1.00 | Qwen3-0.6B | 0.83 ± 0.29 | 90.0% | 0.01 | 0.01 |
+| ASK τ=1.48 | Qwen3-1.7B | 0.87 ± 0.24 | 93.0% | 0.00 | 0.00 |
 
 ---
 

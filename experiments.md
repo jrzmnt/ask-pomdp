@@ -13,7 +13,8 @@
 - ✅ Avaliar SLM baseline Qwen2.5 — `bash scripts/eval_slm.sh` (~4–8h) → `results/slm_qwen25_{0.5b,1.5b}_results.json`
 - ✅ Avaliar SLM baseline Qwen3 — `bash scripts/eval_slm_qwen3.sh` → `results/slm_qwen3_{0.6b,1.7b}_results.json`
 - ✅ Avaliar ASK Qwen2.5 — `bash scripts/eval_ask.sh` → `results/ask_qwen25_{0.5b,1.5b}_results.json`
-- [ ] Avaliar ASK Qwen3 — `bash scripts/eval_ask_qwen3.sh` (~4–8h) → `results/ask_qwen3_{0.6b,1.7b}_results.json`
+- ✅ Avaliar ASK Qwen3-0.6B → `results/ask_qwen3_0.6b_results.json` (τ=1.00, success=90%, IR=0.01)
+- ✅ Avaliar ASK Qwen3-1.7B → `results/ask_qwen3_1.7b_results.json` (τ=1.48, IR=0%, success=93%)
 - [ ] Ablation τ — `bash scripts/ablation_threshold.sh` (~2h) → `results/ask_*_threshold_*.json`
 - [ ] Ablation N MC — `bash scripts/ablation_mc_samples.sh` (~1h, requer ASK) → `results/ask_*_mc*.json`
 - [ ] Ablation always-ask — `bash scripts/ablation_always_ask.sh` (~2h) → `results/ask_*_always_ask.json`

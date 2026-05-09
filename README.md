@@ -23,13 +23,14 @@ All agents evaluated on the same 200 test episodes (seeds 100–299). Threshold 
 | SLM-only | Qwen3-0.6B | 0.00 ± 0.00 | 0% | 500.00 ± 0.00 | 1.00 | — |
 | SLM-only | Qwen3-1.7B | 0.00 ± 0.00 | 0% | 500.00 ± 0.00 | 1.00 | — |
 | ASK (τ=0.55) | Qwen2.5-0.5B | 0.84 ± 0.29 | 89.5% | 85.72 ± 143.78 | 0.14 | 0.10 |
-| ASK (τ=0.92) | Qwen2.5-1.5B | 0.87 ± 0.24 | 93% | 69.12 ± 120.41 | 0.03 | 0.00 |
-| ASK (τ=?) | Qwen3-0.6B | — | — | — | — | — |
-| ASK (τ=?) | Qwen3-1.7B | — | — | — | — | — |
+| ASK (τ=0.92) | Qwen2.5-1.5B | 0.87 ± 0.24 | 93.0% | 69.12 ± 120.41 | 0.03 | 0.00 |
+| ASK (τ=1.00) | Qwen3-0.6B | 0.83 ± 0.29 | 90.0% | 87.61 ± 144.77 | 0.01 | 0.01 |
+| ASK (τ=1.48) | Qwen3-1.7B | 0.87 ± 0.24 | 93.0% | 69.12 ± 120.41 | 0.00 | 0.00 |
 
 *Reward and Episode Length reported as mean ± std. IR = Intervention Rate, OR = Overwrite Rate.*
 *OR not defined for SLM-only (no PPO reference). PPO mean episode length on successful episodes: 36.69 steps.*
 *τ selected via Optuna on 100 validation episodes (seeds 0–99); all agents tested on seeds 100–299.*
+*ASK Qwen3-1.7B: τ=1.48 ≈ max entropy for 3 actions (log₂3≈1.585) — SLM never queried; effectively pure PPO.*
 
 ### Ablation: threshold τ
 
