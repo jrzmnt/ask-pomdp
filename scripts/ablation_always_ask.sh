@@ -13,7 +13,7 @@ source .venv/bin/activate
 
 echo "[ablation_always_ask] Evaluating ASK with τ=0 (always query SLM)"
 
-for SLM in 0.5b 1.5b qwen35-0.8b qwen35-2b; do
+for SLM in 0.5b 1.5b qwen3-0.6b qwen3-1.7b; do
     echo ""
     echo "  Model: ${SLM}"
     python eval_ppo_slm.py \

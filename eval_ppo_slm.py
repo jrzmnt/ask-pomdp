@@ -52,13 +52,13 @@ console = Console()
 WANDB_PROJECT = "ask-pomdp"
 
 QWEN_MODELS = {
-    "0.5b":        "Qwen/Qwen2.5-0.5B-Instruct",
-    "1.5b":        "Qwen/Qwen2.5-1.5B-Instruct",
-    "qwen35-0.8b": "Qwen/Qwen3.5-0.8B",
-    "qwen35-2b":   "Qwen/Qwen3.5-2B",
+    "0.5b":       "Qwen/Qwen2.5-0.5B-Instruct",
+    "1.5b":       "Qwen/Qwen2.5-1.5B-Instruct",
+    "qwen3-0.6b": "Qwen/Qwen3-0.6B",
+    "qwen3-1.7b": "Qwen/Qwen3-1.7B",
 }
 
-DECODING = {"max_tokens": 15}
+DECODING = {"max_tokens": 5}  # one action word fits in ≤3 tokens; 5 gives safe margin
 
 N_EVAL_EPISODES = 100
 N_TEST_EPISODES = 200
@@ -134,8 +134,8 @@ def set_torch_seed(seed: int) -> None:
 def short_model_name(model_name: str) -> str:
     name = model_name.lower().replace("/", "-").replace("_", "-").replace(".", "")
     for pattern, tag in [
-        ("qwen35-08b", "qwen35_0.8b"),
-        ("qwen35-2b",  "qwen35_2b"),
+        ("qwen3-06b",  "qwen3_0.6b"),
+        ("qwen3-17b",  "qwen3_1.7b"),
         ("qwen25-05b", "qwen25_0.5b"),
         ("qwen25-15b", "qwen25_1.5b"),
         ("05b",        "qwen25_0.5b"),
@@ -465,7 +465,7 @@ def wandb_log_optuna_trials(run, study: "optuna.Study") -> None:
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Evaluate PPO / SLM / ASK on MiniGrid-FourRooms")
     p.add_argument("--mode", choices=["ppo", "slm", "ask", "all"], default="all")
-    p.add_argument("--slm", choices=["0.5b", "1.5b", "qwen35-0.8b", "qwen35-2b", "all"], default="all")
+    p.add_argument("--slm", choices=["0.5b", "1.5b", "qwen3-0.6b", "qwen3-1.7b", "all"], default="all")
     p.add_argument("--threshold", type=float, default=None,
                    help="Fixed τ — skips Optuna")
     p.add_argument("--n-mc", type=int, default=N_MC_SAMPLES, dest="n_mc")

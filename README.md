@@ -20,33 +20,53 @@ All agents evaluated on the same 200 test episodes (seeds 100–299). Threshold 
 | PPO | — | 0.87 ± 0.24 | 93% | 69.12 ± 120.41 | — | — |
 | SLM-only | Qwen2.5-0.5B | 0.04 ± 0.17 | 4% | 482.56 ± 85.94 | 1.00 | — |
 | SLM-only | Qwen2.5-1.5B | 0.00 ± 0.00 | 0% | 500.00 ± 0.00 | 1.00 | — |
-| ASK | Qwen2.5-0.5B | — | — | — | — | — |
-| ASK | Qwen2.5-1.5B | — | — | — | — | — |
+| SLM-only | Qwen3-0.6B | 0.00 ± 0.00 | 0% | 500.00 ± 0.00 | 1.00 | — |
+| SLM-only | Qwen3-1.7B | 0.00 ± 0.00 | 0% | 500.00 ± 0.00 | 1.00 | — |
+| ASK (τ=0.55) | Qwen2.5-0.5B | 0.84 ± 0.29 | 89.5% | 85.72 ± 143.78 | 0.14 | 0.10 |
+| ASK (τ=0.92) | Qwen2.5-1.5B | 0.87 ± 0.24 | 93% | 69.12 ± 120.41 | 0.03 | 0.00 |
+| ASK (τ=?) | Qwen3-0.6B | — | — | — | — | — |
+| ASK (τ=?) | Qwen3-1.7B | — | — | — | — | — |
 
 *Reward and Episode Length reported as mean ± std. IR = Intervention Rate, OR = Overwrite Rate.*
-*OR is not defined for SLM-only (no PPO reference). PPO mean episode length on successful episodes only: 36.69 steps.*
+*OR not defined for SLM-only (no PPO reference). PPO mean episode length on successful episodes: 36.69 steps.*
+*τ selected via Optuna on 100 validation episodes (seeds 0–99); all agents tested on seeds 100–299.*
 
-### Ablation: threshold τ (ASK + Qwen2.5-0.5B)
+### Ablation: threshold τ
 
-| τ | Reward ↑ | Success Rate ↑ | IR | OR |
-|---|:--------:|:--------------:|:--:|:--:|
-| 0.1 | — | — | — | — |
-| 0.3 | — | — | — | — |
-| 0.5 | — | — | — | — |
-| 0.7 | — | — | — | — |
-| 1.0 | — | — | — | — |
-| 1.5 | — | — | — | — |
-| 2.0 | — | — | — | — |
+| τ | Reward ↑ | Success ↑ | IR | OR | Reward ↑ | Success ↑ | IR | OR |
+|---|:--------:|:---------:|:--:|:--:|:--------:|:---------:|:--:|:--:|
+| | **Qwen2.5-1.5B** | | | | **Qwen3-1.7B** | | | |
+| 0.1 | — | — | — | — | — | — | — | — |
+| 0.3 | — | — | — | — | — | — | — | — |
+| 0.5 | — | — | — | — | — | — | — | — |
+| 0.7 | — | — | — | — | — | — | — | — |
+| 0.9 | — | — | — | — | — | — | — | — |
+| 1.0 | — | — | — | — | — | — | — | — |
+| 1.2 | — | — | — | — | — | — | — | — |
+| 1.4 | — | — | — | — | — | — | — | — |
+| 1.6 | — | — | — | — | — | — | — | — |
+| 1.8 | — | — | — | — | — | — | — | — |
+| 2.0 | — | — | — | — | — | — | — | — |
 
-### Ablation: MC samples N (ASK + Qwen2.5-0.5B, τ = Optuna best)
+### Ablation: MC samples N (τ = Optuna best)
 
-| N | Reward ↑ | Success Rate ↑ | IR | OR |
-|---|:--------:|:--------------:|:--:|:--:|
-| 5 | — | — | — | — |
-| 10 | — | — | — | — |
-| 20 | — | — | — | — |
-| 30 | — | — | — | — |
-| 50 | — | — | — | — |
+| N | Reward ↑ | Success ↑ | IR | OR | Reward ↑ | Success ↑ | IR | OR |
+|---|:--------:|:---------:|:--:|:--:|:--------:|:---------:|:--:|:--:|
+| | **Qwen2.5-1.5B** | | | | **Qwen3-1.7B** | | | |
+| 5  | — | — | — | — | — | — | — | — |
+| 10 | — | — | — | — | — | — | — | — |
+| 20 | — | — | — | — | — | — | — | — |
+| 30 | — | — | — | — | — | — | — | — |
+| 50 | — | — | — | — | — | — | — | — |
+
+### Ablation: always-ask (τ = 0, IR = 100%)
+
+| Agent | Model | Reward ↑ | Success ↑ | IR | OR |
+|-------|-------|:--------:|:---------:|:--:|:--:|
+| ASK τ=0 | Qwen2.5-0.5B | — | — | 1.00 | — |
+| ASK τ=0 | Qwen2.5-1.5B | — | — | 1.00 | — |
+| ASK τ=0 | Qwen3-0.6B | — | — | 1.00 | — |
+| ASK τ=0 | Qwen3-1.7B | — | — | 1.00 | — |
 
 ---
 
