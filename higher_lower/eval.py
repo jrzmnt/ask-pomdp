@@ -1,0 +1,433 @@
+"""
+Evaluate PPO / SLM-only / ASK on HigherLower (POPGym).
+
+Usage:
+  python higher_lower/eval.py --mode ppo
+  python higher_lower/eval.py --mode slm  --slm 1.5b
+  python higher_lower/eval.py --mode ask  --slm 1.5b
+  python higher_lower/eval.py --mode ask  --slm 1.5b --threshold 0.8
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import gc
+import json
+import time
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import numpy as np
+import optuna
+import torch
+import wandb
+from rich import box
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from stable_baselines3 import PPO
+from tqdm import tqdm
+
+from ask.slm.model import load_slm
+from ask.uncertainty.entropy import compute_mc_uncertainties
+from ask.utils.seed import set_seed
+from higher_lower.env import ACTIONS_STR, HigherLowerEnv, _STR_TO_ACTION
+
+console = Console()
+
+WANDB_PROJECT = "ask-pomdp"
+
+QWEN_MODELS = {
+    "0.5b":       "Qwen/Qwen2.5-0.5B-Instruct",
+    "1.5b":       "Qwen/Qwen2.5-1.5B-Instruct",
+    "qwen3-0.6b": "Qwen/Qwen3-0.6B",
+    "qwen3-1.7b": "Qwen/Qwen3-1.7B",
+}
+
+DECODING = {"max_tokens": 5}
+
+N_EVAL_EPISODES = 100
+N_TEST_EPISODES = 200
+N_MC_SAMPLES = 30
+
+RESULTS_DIR = Path("higher_lower/results")
+RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+# =============================================================================
+# Helpers
+# =============================================================================
+
+def short_model_name(model_name: str) -> str:
+    name = model_name.lower().replace("/", "-").replace("_", "-").replace(".", "")
+    for pattern, tag in [
+        ("qwen3-06b",  "qwen3_0.6b"),
+        ("qwen3-17b",  "qwen3_1.7b"),
+        ("qwen25-05b", "qwen25_0.5b"),
+        ("qwen25-15b", "qwen25_1.5b"),
+        ("05b",        "qwen25_0.5b"),
+        ("15b",        "qwen25_1.5b"),
+    ]:
+        if pattern in name:
+            return tag
+    return "qwen_unknown"
+
+
+def slm_cfg_for(model_name: str) -> Dict[str, Any]:
+    return {
+        "provider": "hf",
+        "model": model_name,
+        "device": "cuda" if torch.cuda.is_available() else "cpu",
+        "dtype": "float16",
+    }
+
+
+def parse_action(text: str) -> Optional[int]:
+    text = text.strip().upper()
+    for key, val in _STR_TO_ACTION.items():
+        if key in text:
+            return val
+    return None
+
+
+def _summarize(logs: List[Dict], extra: Optional[Dict] = None) -> Dict:
+    rewards = [l["reward"] for l in logs]
+    accs = [l["accuracy"] for l in logs]
+    summary: Dict[str, Any] = {
+        "n_episodes":   len(logs),
+        "mean_reward":  float(np.mean(rewards)),
+        "std_reward":   float(np.std(rewards)),
+        "mean_accuracy": float(np.mean(accs)),
+        "std_accuracy": float(np.std(accs)),
+    }
+    if extra:
+        summary.update(extra)
+    return summary
+
+
+def _print_summary_table(title: str, summary: Dict) -> None:
+    table = Table(title=title, box=box.SIMPLE_HEAD, show_header=True, min_width=40)
+    table.add_column("Metric", style="cyan", no_wrap=True)
+    table.add_column("Value", style="green", justify="right")
+    for k, v in summary.items():
+        if isinstance(v, float):
+            table.add_row(k, f"{v:.4f}" if v == v else "—")
+        else:
+            table.add_row(k, str(v))
+    console.print(table)
+
+
+def save_csv(rows: List[Dict], path: Path) -> None:
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def save_summary(data: Dict, path: Path) -> None:
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
+    console.print(f"  Saved → {path}")
+
+
+def save_threshold(model_name: str, study_name: str, threshold: float, reward: float) -> None:
+    path = RESULTS_DIR / "thresholds.json"
+    registry: Dict = {}
+    if path.exists():
+        with open(path) as f:
+            registry = json.load(f)
+    registry[model_name] = {"threshold": threshold, "optuna_study": study_name, "eval_reward": reward}
+    with open(path, "w") as f:
+        json.dump(registry, f, indent=2)
+    console.print(f"  Threshold saved → {path}")
+
+
+def wandb_log_episodes(run, logs: List[Dict]) -> None:
+    table = wandb.Table(
+        columns=list(logs[0].keys()),
+        data=[[row[k] for k in logs[0].keys()] for row in logs],
+    )
+    run.log({"episodes": table})
+
+
+def wandb_log_optuna_trials(run, study: "optuna.Study") -> None:
+    rows = [
+        {"trial": t.number, "threshold": t.params["threshold"], "reward": t.value, "state": str(t.state)}
+        for t in study.trials if t.value is not None
+    ]
+    if not rows:
+        return
+    table = wandb.Table(
+        columns=list(rows[0].keys()),
+        data=[[r[k] for k in rows[0].keys()] for r in rows],
+    )
+    run.log({"optuna_trials": table})
+
+
+# =============================================================================
+# PPO eval
+# =============================================================================
+
+def _obs_arr(obs: int) -> np.ndarray:
+    return np.array([obs], dtype=np.float32)
+
+
+def eval_ppo(model_path: str, n_episodes: int, seed_offset: int = 0):
+    env = HigherLowerEnv()
+    model = PPO.load(model_path, device="cuda" if torch.cuda.is_available() else "cpu")
+    model.policy.set_training_mode(False)
+
+    logs = []
+    for ep in tqdm(range(n_episodes), desc="PPO eval", unit="ep", leave=False):
+        obs, _ = env.reset(seed=seed_offset + ep)
+        done, total_reward, correct, total_steps = False, 0.0, 0, 0
+        t0 = time.time()
+        while not done:
+            action, _ = model.predict(_obs_arr(obs), deterministic=True)
+            next_obs, reward, terminated, truncated, _ = env.step(int(action.flat[0]))
+            total_reward += float(reward)
+            if reward > 0:
+                correct += 1
+            total_steps += 1
+            obs = next_obs
+            done = terminated or truncated
+        logs.append({
+            "episode": ep + 1, "seed": seed_offset + ep,
+            "reward": total_reward, "accuracy": correct / total_steps if total_steps else 0.0,
+            "steps": total_steps, "IR": 0.0, "OR": 0.0,
+            "slm_valid_rate": 0.0, "invalid_action_rate": 0.0,
+            "episode_time_s": time.time() - t0,
+        })
+    env.close()
+    return _summarize(logs), logs
+
+
+# =============================================================================
+# SLM-only eval
+# =============================================================================
+
+def eval_slm_only(slm_cfg: Dict, n_episodes: int, seed_offset: int = 0):
+    env = HigherLowerEnv()
+    slm = load_slm(slm_cfg)
+    tag = short_model_name(slm_cfg["model"])
+
+    logs = []
+    for ep in tqdm(range(n_episodes), desc=f"SLM {tag}", unit="ep", leave=False):
+        obs, _ = env.reset(seed=seed_offset + ep)
+        done, total_reward, correct, total_steps, invalid = False, 0.0, 0, 0, 0
+        t0 = time.time()
+        while not done:
+            prompt = env.build_prompt()
+            output = slm.generate(prompt, DECODING)
+            action = parse_action(output.text)
+            if action is None:
+                invalid += 1
+                action = 0  # fallback: HIGHER
+            next_obs, reward, terminated, truncated, _ = env.step(action)
+            total_reward += float(reward)
+            if reward > 0:
+                correct += 1
+            total_steps += 1
+            obs = next_obs
+            done = terminated or truncated
+        logs.append({
+            "episode": ep + 1, "seed": seed_offset + ep,
+            "reward": total_reward,
+            "accuracy": correct / total_steps if total_steps else 0.0,
+            "steps": total_steps, "IR": 1.0, "OR": float("nan"),
+            "slm_valid_rate": 1.0 - invalid / total_steps if total_steps else 0.0,
+            "invalid_action_rate": invalid / total_steps if total_steps else 0.0,
+            "episode_time_s": time.time() - t0,
+        })
+    env.close()
+    del slm
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    return _summarize(logs, {"slm_model": slm_cfg["model"]}), logs
+
+
+# =============================================================================
+# ASK eval
+# =============================================================================
+
+def eval_ask(model: PPO, slm, threshold: float, n_episodes: int,
+             seed_offset: int = 0, n_mc_samples: int = N_MC_SAMPLES):
+    env = HigherLowerEnv()
+    logs = []
+
+    for ep in tqdm(range(n_episodes), desc=f"ASK τ={threshold:.2f}", unit="ep", leave=False):
+        obs, _ = env.reset(seed=seed_offset + ep)
+        done, total_reward, correct, steps = False, 0.0, 0, 0
+        slm_called, slm_valid, slm_overwrites, slm_invalid = 0, 0, 0, 0
+        t0 = time.time()
+        while not done:
+            obs_arr = _obs_arr(obs)
+            action_arr, _ = model.predict(obs_arr, deterministic=True)
+            ppo_action = int(action_arr.flat[0])
+
+            total_unc, _, _, _ = compute_mc_uncertainties(model, obs_arr, n_samples=n_mc_samples)
+
+            if total_unc >= threshold:
+                slm_called += 1
+                prompt = env.build_prompt(ppo_action)
+                output = slm.generate(prompt, DECODING)
+                slm_action = parse_action(output.text)
+                if slm_action is not None:
+                    slm_valid += 1
+                    if slm_action != ppo_action:
+                        ppo_action = slm_action
+                        slm_overwrites += 1
+                else:
+                    slm_invalid += 1
+
+            next_obs, reward, terminated, truncated, _ = env.step(ppo_action)
+            total_reward += float(reward)
+            if reward > 0:
+                correct += 1
+            steps += 1
+            obs = next_obs
+            done = terminated or truncated
+
+        logs.append({
+            "episode": ep + 1, "seed": seed_offset + ep,
+            "reward": total_reward,
+            "accuracy": correct / steps if steps else 0.0,
+            "steps": steps,
+            "IR": slm_called / steps if steps else 0.0,
+            "OR": slm_overwrites / steps if steps else 0.0,
+            "slm_valid_rate": slm_valid / slm_called if slm_called > 0 else 0.0,
+            "invalid_action_rate": slm_invalid / slm_called if slm_called > 0 else 0.0,
+            "episode_time_s": time.time() - t0,
+        })
+    env.close()
+    return float(np.mean([l["reward"] for l in logs])), logs
+
+
+def objective(trial, model_path, slm_cfg, n_eval_episodes, n_mc_samples):
+    threshold = trial.suggest_float("threshold", 0.01, 1.5)
+    model = PPO.load(model_path, device="cuda" if torch.cuda.is_available() else "cpu")
+    slm = load_slm(slm_cfg)
+    mean_reward, _ = eval_ask(model, slm, threshold, n_eval_episodes, seed_offset=0,
+                               n_mc_samples=n_mc_samples)
+    del model, slm
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    return mean_reward
+
+
+# =============================================================================
+# CLI
+# =============================================================================
+
+def parse_args():
+    p = argparse.ArgumentParser()
+    p.add_argument("--mode", choices=["ppo", "slm", "ask"], default="ppo")
+    p.add_argument("--slm", choices=list(QWEN_MODELS.keys()), default="1.5b")
+    p.add_argument("--threshold", type=float, default=None)
+    p.add_argument("--n-mc", type=int, default=N_MC_SAMPLES, dest="n_mc")
+    p.add_argument("--n-episodes", type=int, default=N_TEST_EPISODES, dest="n_episodes")
+    p.add_argument("--n-eval-episodes", type=int, default=N_EVAL_EPISODES, dest="n_eval_episodes")
+    p.add_argument("--n-optuna-trials", type=int, default=15, dest="n_optuna_trials")
+    p.add_argument("--model-path", type=str, default="runs/higher_lower/model", dest="model_path")
+    p.add_argument("--tag", type=str, default="")
+    p.add_argument("--wandb-group", type=str, default="higher_lower", dest="wandb_group")
+    return p.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    set_seed(42)
+    torch.manual_seed(42)
+
+    file_tag = f"_{args.tag}" if args.tag else ""
+
+    if args.mode == "ppo":
+        console.rule("[bold cyan]PPO — HigherLower[/bold cyan]")
+        with wandb.init(project=WANDB_PROJECT, name=f"hl_eval_ppo{file_tag}",
+                        group=args.wandb_group, job_type="eval_ppo",
+                        config={"env": "HigherLowerEasy", "n_episodes": args.n_episodes}):
+            summary, logs = eval_ppo(args.model_path, args.n_episodes, seed_offset=N_EVAL_EPISODES)
+            _print_summary_table("PPO results", summary)
+            wandb.run.summary.update(summary)
+            wandb_log_episodes(wandb.run, logs)
+            save_summary(summary, RESULTS_DIR / f"ppo_results{file_tag}.json")
+            save_csv(logs, RESULTS_DIR / f"ppo_episodes{file_tag}.csv")
+
+    elif args.mode == "slm":
+        model_name = QWEN_MODELS[args.slm]
+        tag = short_model_name(model_name)
+        cfg = slm_cfg_for(model_name)
+        console.rule(f"[bold cyan]SLM-only — {tag} — HigherLower[/bold cyan]")
+        with wandb.init(project=WANDB_PROJECT, name=f"hl_eval_slm_{tag}{file_tag}",
+                        group=args.wandb_group, job_type="eval_slm",
+                        config={"env": "HigherLowerEasy", "slm_model": model_name,
+                                "n_episodes": args.n_episodes}):
+            summary, logs = eval_slm_only(cfg, args.n_episodes, seed_offset=N_EVAL_EPISODES)
+            _print_summary_table(f"SLM {tag} results", summary)
+            wandb.run.summary.update(summary)
+            wandb_log_episodes(wandb.run, logs)
+            save_summary(summary, RESULTS_DIR / f"slm_{tag}_results{file_tag}.json")
+            save_csv(logs, RESULTS_DIR / f"slm_{tag}_episodes{file_tag}.csv")
+
+    elif args.mode == "ask":
+        model_name = QWEN_MODELS[args.slm]
+        tag = short_model_name(model_name)
+        cfg = slm_cfg_for(model_name)
+
+        study = None
+        if args.threshold is not None:
+            best_threshold = args.threshold
+            console.rule(f"[bold cyan]ASK — {tag} τ={best_threshold:.4f} (fixed)[/bold cyan]")
+        else:
+            console.rule(f"[bold cyan]ASK — {tag} Optuna ({args.n_optuna_trials} trials)[/bold cyan]")
+            study_name = f"hl_ask_{tag}{file_tag}"
+            study = optuna.create_study(direction="maximize", storage="sqlite:///optuna.db",
+                                        study_name=study_name, load_if_exists=True)
+            study.optimize(
+                lambda t: objective(t, args.model_path, cfg, args.n_eval_episodes, args.n_mc),
+                n_trials=args.n_optuna_trials, show_progress_bar=True,
+            )
+            best_threshold = study.best_params["threshold"]
+            console.print(Panel(
+                f"Best τ = [green]{best_threshold:.4f}[/green]  |  "
+                f"eval reward = [green]{study.best_value:.4f}[/green]",
+                title="Optuna result", border_style="cyan",
+            ))
+            save_threshold(model_name, study_name, best_threshold, study.best_value)
+
+        with wandb.init(project=WANDB_PROJECT, name=f"hl_eval_ask_{tag}{file_tag}",
+                        group=args.wandb_group, job_type="eval_ask",
+                        config={"env": "HigherLowerEasy", "slm_model": model_name,
+                                "threshold": best_threshold, "n_mc_samples": args.n_mc,
+                                "n_episodes": args.n_episodes}):
+            model = PPO.load(args.model_path, device="cuda" if torch.cuda.is_available() else "cpu")
+            slm = load_slm(cfg)
+            _, logs = eval_ask(model, slm, best_threshold, args.n_episodes,
+                               seed_offset=N_EVAL_EPISODES, n_mc_samples=args.n_mc)
+            del model, slm
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            summary = _summarize(logs, {
+                "slm_model": model_name, "threshold": best_threshold,
+                "n_mc_samples": args.n_mc,
+                "IR_mean": float(np.mean([l["IR"] for l in logs])),
+                "OR_mean": float(np.mean([l["OR"] for l in logs])),
+                "slm_valid_rate": float(np.mean([l["slm_valid_rate"] for l in logs])),
+                "invalid_action_rate": float(np.mean([l["invalid_action_rate"] for l in logs])),
+            })
+            _print_summary_table(f"ASK {tag} results", summary)
+            wandb.run.summary.update(summary)
+            wandb_log_episodes(wandb.run, logs)
+            if study is not None:
+                wandb_log_optuna_trials(wandb.run, study)
+            save_summary(summary, RESULTS_DIR / f"ask_{tag}_results{file_tag}.json")
+            save_csv(logs, RESULTS_DIR / f"ask_{tag}_episodes{file_tag}.csv")
+
+
+if __name__ == "__main__":
+    main()

@@ -39,8 +39,11 @@ class DropoutActorCriticPolicy(ActorCriticPolicy):
         super().__init__(*args, **kwargs)
 
     def _build_mlp_extractor(self):
+        net_arch = self.net_arch
+        if isinstance(net_arch, list):
+            net_arch = {"pi": net_arch, "vf": net_arch}
         self.mlp_extractor = DropoutMlpExtractor(
             self.features_dim,
-            net_arch=self.net_arch,
+            net_arch=net_arch,
             dropout_rate=self.dropout_rate,
         )

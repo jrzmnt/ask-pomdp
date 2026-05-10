@@ -1,6 +1,6 @@
 # Experimentos — ASK-POMDP
 
-**Ambiente:** `MiniGrid-FourRooms-v0` | **Deadline:** 15 mai 2026 | **W&B project:** `ask-pomdp`
+**Ambientes:** `MiniGrid-FourRooms-v0` · `POPGym-HigherLower` | **Deadline:** 15 mai 2026 | **W&B project:** `ask-pomdp`
 
 ---
 
@@ -15,9 +15,19 @@
 - ✅ Avaliar ASK Qwen2.5 — `bash scripts/eval_ask.sh` → `results/ask_qwen25_{0.5b,1.5b}_results.json`
 - ✅ Avaliar ASK Qwen3-0.6B → `results/ask_qwen3_0.6b_results.json` (τ=1.00, success=90%, IR=0.01)
 - ✅ Avaliar ASK Qwen3-1.7B → `results/ask_qwen3_1.7b_results.json` (τ=1.48, IR=0%, success=93%)
-- [ ] Ablation τ — `bash scripts/ablation_threshold.sh` (~2h) → `results/ask_*_threshold_*.json`
-- [ ] Ablation N MC — `bash scripts/ablation_mc_samples.sh` (~1h, requer ASK) → `results/ask_*_mc*.json`
-- [ ] Ablation always-ask — `bash scripts/ablation_always_ask.sh` (~2h) → `results/ask_*_always_ask.json`
+- ✅ Ablation τ — `bash scripts/ablation_threshold.sh` → `results/ask_*_threshold_*.json`
+- ✅ Ablation N MC — `bash scripts/ablation_mc_samples.sh` → `results/ask_*_mc*.json`
+- ✅ Ablation always-ask — `bash scripts/ablation_always_ask.sh` → `results/ask_*_always_ask.json`
+
+**HigherLower (POPGym)**
+
+- ✅ Treinar PPO — `bash higher_lower/scripts/train.sh` → `runs/higher_lower/model.zip`
+- ✅ Avaliar PPO baseline — `bash higher_lower/scripts/eval_ppo.sh` → `higher_lower/results/ppo_results.json`
+- ✅ Avaliar SLM baseline — `bash higher_lower/scripts/eval_slm.sh` → `higher_lower/results/slm_*_results.json`
+- ✅ Avaliar ASK — `bash higher_lower/scripts/eval_ask.sh` → `higher_lower/results/ask_*_results.json`
+
+**Pendente (ambos os ambientes)**
+
 - [ ] Criar `plot_results.py` e gerar tabelas/figuras
 - [ ] Baixar template CEUR-WS e escrever o paper (6–9p)
 - [ ] Submeter — https://openreview.net/group?id=ijcai.org/IJCAI-ECAI/2026/Workshop/PRL

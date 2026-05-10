@@ -5,15 +5,15 @@
 > Short paper submitted to the PRL+CAIPI Workshop @ IJCAI-ECAI 2026.
 > Extends [ASK (Monteiro et al., IJCNN 2026)](https://arxiv.org/abs/2604.02226) from fully observable to partially observable environments.
 
-**Environment:** MiniGrid-FourRooms-v0 | **Observation:** 7×7 egocentric (147-dim) | **Actions:** TURN_LEFT, TURN_RIGHT, FORWARD
+**Environments:** MiniGrid-FourRooms-v0 (POMDP navigation) · POPGym-HigherLower (card game with memory)
 
 ---
 
 ## Results
 
-All agents evaluated on the same 200 test episodes (seeds 100–299). Threshold τ selected via Optuna on 100 validation episodes (seeds 0–99).
+All agents evaluated on 200 test episodes (seeds 100–299). Threshold τ tuned via Optuna on 100 validation episodes (seeds 0–99).
 
-### Main comparison
+### FourRooms — Main comparison
 
 | Agent | Model | Reward ↑ | Success Rate ↑ | Ep. Length ↓ | IR | OR |
 |-------|-------|:--------:|:--------------:|:------------:|:--:|:--:|
@@ -32,42 +32,64 @@ All agents evaluated on the same 200 test episodes (seeds 100–299). Threshold 
 *τ selected via Optuna on 100 validation episodes (seeds 0–99); all agents tested on seeds 100–299.*
 *ASK Qwen3-1.7B: τ=1.48 ≈ max entropy for 3 actions (log₂3≈1.585) — SLM never queried; effectively pure PPO.*
 
-### Ablation: threshold τ
+### HigherLower — Main comparison
 
-| τ | Reward ↑ | Success ↑ | IR | OR | Reward ↑ | Success ↑ | IR | OR |
-|---|:--------:|:---------:|:--:|:--:|:--------:|:---------:|:--:|:--:|
-| | **Qwen2.5-1.5B** | | | | **Qwen3-1.7B** | | | |
-| 0.1 | — | — | — | — | — | — | — | — |
-| 0.3 | — | — | — | — | — | — | — | — |
-| 0.5 | — | — | — | — | — | — | — | — |
-| 0.7 | — | — | — | — | — | — | — | — |
-| 0.9 | — | — | — | — | — | — | — | — |
-| 1.0 | — | — | — | — | — | — | — | — |
-| 1.2 | — | — | — | — | — | — | — | — |
-| 1.4 | — | — | — | — | — | — | — | — |
-| 1.6 | — | — | — | — | — | — | — | — |
-| 1.8 | — | — | — | — | — | — | — | — |
-| 2.0 | — | — | — | — | — | — | — | — |
+Episode = 51 steps (full deck). Reward ∈ [−1, 1] (±1/52 per correct/incorrect guess). Accuracy = % correct guesses. Random baseline: 50% accuracy.
 
-### Ablation: MC samples N (τ = Optuna best)
+| Agent | Model | Reward ↑ | Accuracy ↑ | IR | OR |
+|-------|-------|:--------:|:----------:|:--:|:--:|
+| PPO | — | 0.492 ± 0.102 | 72.0% ± 5.9% | — | — |
+| SLM-only | Qwen2.5-0.5B | 0.007 ± 0.079 | 47.3% ± 4.4% | 1.00 | — |
+| SLM-only | Qwen2.5-1.5B | 0.007 ± 0.079 | 47.3% ± 4.4% | 1.00 | — |
+| SLM-only | Qwen3-0.6B | 0.153 ± 0.120 | 54.8% ± 6.3% | 1.00 | — |
+| SLM-only | Qwen3-1.7B | 0.060 ± 0.118 | 50.0% ± 6.1% | 1.00 | — |
+| ASK (τ=0.71) | Qwen2.5-0.5B | 0.492 ± 0.102 | 72.0% ± 5.9% | 0.0% | 0.0% |
+| ASK (τ=0.08) | Qwen2.5-1.5B | 0.492 ± 0.102 | 72.0% ± 5.9% | 7.8% | 0.0% |
+| ASK (τ=0.75) | Qwen3-0.6B   | 0.492 ± 0.102 | 72.0% ± 5.9% | 0.0% | 0.0% |
+| ASK (τ=0.65) | Qwen3-1.7B   | 0.492 ± 0.103 | 72.0% ± 5.9% | 0.4% | 0.1% |
 
-| N | Reward ↑ | Success ↑ | IR | OR | Reward ↑ | Success ↑ | IR | OR |
-|---|:--------:|:---------:|:--:|:--:|:--------:|:---------:|:--:|:--:|
-| | **Qwen2.5-1.5B** | | | | **Qwen3-1.7B** | | | |
-| 5  | — | — | — | — | — | — | — | — |
-| 10 | — | — | — | — | — | — | — | — |
-| 20 | — | — | — | — | — | — | — | — |
-| 30 | — | — | — | — | — | — | — | — |
-| 50 | — | — | — | — | — | — | — | — |
+*Seeds: validation 0–99, test 100–299. All ASK agents match PPO reward — Optuna sets τ high enough that the SLM is rarely/never called, since PPO already plays near-optimally via card counting.*
 
-### Ablation: always-ask (τ = 0, IR = 100%)
+### FourRooms — Ablation: threshold τ (FourRooms)
 
-| Agent | Model | Reward ↑ | Success ↑ | IR | OR |
-|-------|-------|:--------:|:---------:|:--:|:--:|
-| ASK τ=0 | Qwen2.5-0.5B | — | — | 1.00 | — |
-| ASK τ=0 | Qwen2.5-1.5B | — | — | 1.00 | — |
-| ASK τ=0 | Qwen3-0.6B | — | — | 1.00 | — |
-| ASK τ=0 | Qwen3-1.7B | — | — | 1.00 | — |
+| τ | Reward (1.5B) ↑ | Success (1.5B) ↑ | IR | OR | Reward (3-1.7B) ↑ | Success (3-1.7B) ↑ | IR | OR |
+|---|:---------------:|:----------------:|:--:|:--:|:-----------------:|:------------------:|:--:|:--:|
+| 0.1 | 0.869 ± 0.242 | 93% | 28.8% | 0.0% | 0.287 ± 0.441 | 30%  | 47.8% | 41.2% |
+| 0.3 | 0.869 ± 0.242 | 93% | 14.7% | 0.0% | 0.582 ± 0.454 | 63%  | 26.6% | 20.9% |
+| 0.5 | 0.869 ± 0.242 | 93% |  8.7% | 0.0% | 0.578 ± 0.457 | 62.5%| 19.3% | 16.0% |
+| 0.7 | 0.869 ± 0.242 | 93% |  6.5% | 0.0% | 0.672 ± 0.426 | 71.5%| 12.9% | 10.6% |
+| 0.9 | 0.869 ± 0.242 | 93% |  3.8% | 0.0% | 0.769 ± 0.349 | 84%  |  6.3% |  5.0% |
+| 1.0 | 0.869 ± 0.242 | 93% |  1.7% | 0.0% | 0.828 ± 0.301 | 88.5%|  2.3% |  1.4% |
+| 1.2 | 0.869 ± 0.242 | 93% |  0.2% | 0.0% | 0.873 ± 0.234 | 93.5%|  0.2% |  0.1% |
+| 1.4 | 0.869 ± 0.242 | 93% |  0.0% | 0.0% | 0.864 ± 0.249 | 92.5%|  0.1% |  0.1% |
+| 1.6 | 0.869 ± 0.242 | 93% |  0.0% | 0.0% | 0.869 ± 0.242 | 93%  |  0.0% |  0.0% |
+| 1.8 | 0.869 ± 0.242 | 93% |  0.0% | 0.0% | 0.869 ± 0.242 | 93%  |  0.0% |  0.0% |
+| 2.0 | 0.869 ± 0.242 | 93% |  0.0% | 0.0% | 0.869 ± 0.242 | 93%  |  0.0% |  0.0% |
+
+*Qwen2.5-1.5B: reward is flat across all τ (OR=0% — SLM always agrees with PPO). Qwen3-1.7B: low τ causes catastrophic performance degradation (OR>40% at τ=0.1), confirming the necessity of proper threshold tuning.*
+
+### FourRooms — Ablation: MC samples N (τ = Optuna best)
+
+| N | Reward (1.5B) ↑ | Success (1.5B) ↑ | IR | OR | Reward (3-1.7B) ↑ | Success (3-1.7B) ↑ | IR | OR |
+|---|:---------------:|:----------------:|:--:|:--:|:-----------------:|:------------------:|:--:|:--:|
+|  5 | 0.869 ± 0.242 | 93% | 3.2% | 0.0% | 0.869 ± 0.242 | 93% | 0.0% | 0.0% |
+| 10 | 0.869 ± 0.242 | 93% | 3.2% | 0.0% | 0.869 ± 0.242 | 93% | 0.0% | 0.0% |
+| 20 | 0.869 ± 0.242 | 93% | 3.4% | 0.0% | 0.869 ± 0.242 | 93% | 0.0% | 0.0% |
+| 30 | 0.869 ± 0.242 | 93% | 3.4% | 0.0% | 0.869 ± 0.242 | 93% | 0.0% | 0.0% |
+| 50 | 0.869 ± 0.242 | 93% | 3.4% | 0.0% | 0.869 ± 0.242 | 93% | 0.0% | 0.0% |
+
+*Performance is robust to N across all values tested. IR varies minimally for Qwen2.5-1.5B (~3.2–3.4%); Qwen3-1.7B shows IR≈0% regardless of N due to its high Optuna-tuned τ.*
+
+### FourRooms — Ablation: always-ask (τ = 0, IR = 100%)
+
+| Model | Reward ↑ | Success ↑ | OR |
+|-------|:--------:|:---------:|:--:|
+| Qwen2.5-0.5B | 0.025 ± 0.154 |  2.5% | 96.5% |
+| Qwen2.5-1.5B | 0.869 ± 0.242 | 93.0% |  0.0% |
+| Qwen3-0.6B   | 0.000 ± 0.000 |  0.0% | 64.9% |
+| Qwen3-1.7B   | 0.015 ± 0.119 |  1.5% | 95.2% |
+
+*Qwen2.5-1.5B is the only model that matches PPO under always-ask (OR=0% — never overwrites), suggesting it has learned to navigate in-context. All other models degrade catastrophically when forced to act at every step.*
 
 ---
 
