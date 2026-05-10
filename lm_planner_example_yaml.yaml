@@ -1,0 +1,41 @@
+model:
+  name: "Qwen/Qwen3.5-2B"
+  device: "auto"
+  dtype: "float16"
+  max_new_tokens: 10
+  temperature: 0.6
+  do_sample: false
+  repetition_penalty: 1.5
+
+prompts:
+  planner:
+    system: >
+      You are a robot navigation agent on a grid.
+      You receive the full grid map, your position, the goal position, and your move history.
+      You must choose exactly one action: UP, DOWN, LEFT, or RIGHT.
+      You must NEVER choose an action listed under UNSAFE actions.
+      Reply with one word only. No explanation.
+
+  safety:
+    system: >
+      You are a safety verification agent. You will be given a navigation plan
+      that has been found to be unsafe, along with a description of the violations.
+      Your task is to produce a corrected plan that avoids all Holes and stays
+      within the grid bounds. Respond only with the corrected action list,
+      e.g. [RIGHT, DOWN, RIGHT, DOWN]. Do not explain.
+
+  alignment:
+    system: >
+      You are an alignment agent. A navigation agent has diverged from its intended
+      trajectory. You will be given the original plan, the agent's current position,
+      and where the agent was expected to be. Your task is to recommend the single
+      best next action to safely guide the agent toward the goal, taking both the
+      intended plan and the agent's actual position into account.
+      Output format: respond with exactly ONE word. The word must be one of: UP, DOWN, LEFT, RIGHT.
+      No other text. No explanation. No punctuation. Just the single action word.
+
+safety:
+  max_retries: 3
+
+alignment:
+  divergence_threshold: 2   # Manhattan distance at which a replan is triggered

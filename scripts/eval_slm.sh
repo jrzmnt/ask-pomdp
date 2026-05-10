@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Evaluate SLM-only baselines (Qwen 0.5B and 1.5B).
-# Output: results/slm_qwen_{0.5b,1.5b}_results.json
+# Evaluate SLM-only baseline — Qwen3.5-2B and Qwen3.5-4B.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -8,7 +7,9 @@ source .venv/bin/activate
 
 echo "[eval_slm] Evaluating SLM-only baselines (200 episodes each)"
 
-python eval_ppo_slm.py --mode slm --slm 0.5b --wandb-group main
-python eval_ppo_slm.py --mode slm --slm 1.5b --wandb-group main
+for SLM in qwen3.5-2b qwen3.5-4b; do
+    echo "  → $SLM"
+    python eval_ppo_slm.py --mode slm --slm "$SLM" --wandb-group fourrooms
+done
 
-echo "[eval_slm] Done → results/slm_qwen_*.json"
+echo "[eval_slm] Done → results/slm_*.json"

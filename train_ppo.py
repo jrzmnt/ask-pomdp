@@ -17,9 +17,14 @@ from wandb.integration.sb3 import WandbCallback
 console = Console()
 
 from ask.envs.fourrooms import FourRoomsEnv
-from ask.utils.callbacks import EvalCallbackWithEvalMode
+from ask.utils.callbacks import RewardThresholdCheckpointCallback
 from ask.utils.ppo import DropoutActorCriticPolicy
 from ask.utils.seed import set_seed
+
+# Reward thresholds at which to snapshot the model.
+# These span the learning curve from near-random to near-optimal,
+# giving 4 qualitatively different PPO agents for the ablation.
+CHECKPOINT_THRESHOLDS = [0.1, 0.3, 0.5, 0.7]
 
 
 def load_config(path: str) -> dict:
@@ -45,16 +50,19 @@ def main():
     t = Table(show_header=False, box=None, padding=(0, 2))
     t.add_column(style="cyan")
     t.add_column(style="green")
-    t.add_row("env",       cfg["env"]["name"])
-    t.add_row("steps",     f"{cfg['training']['total_timesteps']:,}")
-    t.add_row("net_arch",  str(cfg["policy"]["net_arch"]))
-    t.add_row("dropout",   str(cfg["policy"]["dropout_rate"]))
-    t.add_row("device",    cfg.get("device", "auto"))
+    t.add_row("env",        cfg["env"]["name"])
+    t.add_row("steps",      f"{cfg['training']['total_timesteps']:,}")
+    t.add_row("net_arch",   str(cfg["policy"]["net_arch"]))
+    t.add_row("dropout",    str(cfg["policy"]["dropout_rate"]))
+    t.add_row("ckpt_thres", str(CHECKPOINT_THRESHOLDS))
+    t.add_row("device",     cfg.get("device", "auto"))
     console.print(Panel(t, title="[bold]PPO Training[/bold]", border_style="cyan"))
 
     run = wandb.init(
-        project="ask-pomdp",
-        name="ppo_train",
+        project="ask-pomdp-v2",
+        name="fr_train",
+        group="fourrooms",
+        job_type="train",
         config=cfg,
         sync_tensorboard=True,
         save_code=False,
@@ -79,8 +87,10 @@ def main():
     )
 
     callbacks = [
-        EvalCallbackWithEvalMode(
-            eval_env,
+        RewardThresholdCheckpointCallback(
+            thresholds=CHECKPOINT_THRESHOLDS,
+            checkpoint_dir="./runs/ppo/checkpoints/",
+            eval_env=eval_env,
             best_model_save_path="./runs/ppo/best_model/",
             log_path="./runs/ppo/logs/",
             eval_freq=cfg["training"]["eval_freq"],

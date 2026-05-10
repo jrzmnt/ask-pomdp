@@ -84,26 +84,38 @@ class HigherLowerEnv(gym.Wrapper):
         above = self.cards_above(card)
         below = self.cards_below(card)
         equal = self.cards_equal(card)
-        total_remaining = above + below + equal
-
-        ppo_line = (
-            f"\nPPO autopilot suggests: {ACTIONS_STR[ppo_action]}"
-            if ppo_action is not None else ""
-        )
+        ppo_line = f"\nAutopilot suggests: {ACTIONS_STR[ppo_action]}" if ppo_action is not None else ""
 
         return f"""\
-You are playing a Higher/Lower card game with a standard 52-card deck (A=lowest, K=highest).
+You are a card game decision policy.
+Your task is to choose exactly ONE action.
 
+VALID ACTIONS:
+HIGHER
+LOWER
+
+RULES:
+- Do NOT explain.
+- Do NOT add text or markdown.
+- Choose HIGHER if more cards remaining are above the current card.
+- Choose LOWER if more cards remaining are below the current card.
+- If the autopilot suggestion is consistent with the card counts, follow it.
+
+STATE:
 Current card: {card}
+Cards remaining higher: {above}
+Cards remaining lower: {below}
+Cards remaining equal: {equal}{ppo_line}
 
-Remaining deck ({total_remaining} cards):
-  Higher than {card}: {above} cards
-  Lower than {card}:  {below} cards
-  Same as {card}:     {equal} cards
+Examples:
+Card=A, 48 higher, 0 lower → HIGHER
+Card=4, 39 higher, 8 lower → HIGHER
+Card=9, 8 higher, 38 lower → LOWER
+Card=K, 0 higher, 48 lower → LOWER
 
-Choose the action that maximizes the probability of being correct.
-{ppo_line}
-Output EXACTLY one word: HIGHER or LOWER\
-"""
+OUTPUT FORMAT (MANDATORY):
+HIGHER or LOWER
+
+Action: """
 
 

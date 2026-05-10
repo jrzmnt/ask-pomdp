@@ -1,9 +1,12 @@
 """
-Train PPO on HigherLower (POPGym).
+Train PPO on HigherLower (POPGym) with reward-threshold checkpoints.
+
+Saves model_reward_NNN.zip the first time eval reward crosses each threshold,
+giving qualitatively different PPO agents for the optimality ablation.
 
 Usage:
   python higher_lower/train.py
-  python higher_lower/train.py --timesteps 1000000 --seed 42
+  python higher_lower/train.py --timesteps 500000 --seed 42
 """
 
 from __future__ import annotations
@@ -14,18 +17,24 @@ from pathlib import Path
 import torch
 import wandb
 from stable_baselines3 import PPO
-from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.callbacks import BaseCallback, ProgressBarCallback
 from stable_baselines3.common.monitor import Monitor
-from tqdm import tqdm
 
 from ask.utils.seed import set_seed
 from ask.utils.ppo import DropoutActorCriticPolicy
+from ask.utils.callbacks import RewardThresholdCheckpointCallback
 from higher_lower.env import HigherLowerEnv
 
+# Reward thresholds for checkpointing.
+# HigherLower PPO typically reaches ~0.49 at convergence;
+# these 4 levels cover near-random → near-optimal.
+CHECKPOINT_THRESHOLDS = [0.1, 0.2, 0.3, 0.4]
 
-class TqdmCallback(BaseCallback):
+
+class ProgressCallback(BaseCallback):
     def __init__(self, total_timesteps: int):
         super().__init__()
+        from tqdm import tqdm
         self.pbar = tqdm(total=total_timesteps, unit="step", dynamic_ncols=True)
 
     def _on_step(self) -> bool:
@@ -36,9 +45,8 @@ class TqdmCallback(BaseCallback):
         self.pbar.close()
 
 
-def make_env(seed: int = 0):
-    env = HigherLowerEnv(num_decks=1)
-    return Monitor(env)
+def make_env():
+    return Monitor(HigherLowerEnv(num_decks=1))
 
 
 def main() -> None:
@@ -52,21 +60,25 @@ def main() -> None:
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint_dir = out.parent / "checkpoints"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     with wandb.init(
-        project="ask-pomdp",
-        name="train_higher_lower",
-        group="higher_lower",
+        project="ask-pomdp-v2",
+        name="hl_train",
+        group="higherlower",
         job_type="train",
         config={
             "env": "HigherLowerEasy",
             "timesteps": args.timesteps,
+            "checkpoint_thresholds": CHECKPOINT_THRESHOLDS,
             "seed": args.seed,
             "net_arch": [128, 128],
             "dropout_rate": 0.2,
         },
     ):
-        env = make_env(args.seed)
+        env = make_env()
+        eval_env = make_env()
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
         model = PPO(
@@ -77,10 +89,35 @@ def main() -> None:
             seed=args.seed,
             device=device,
         )
-        model.learn(total_timesteps=args.timesteps, callback=TqdmCallback(args.timesteps))
+
+        callbacks = [
+            RewardThresholdCheckpointCallback(
+                thresholds=CHECKPOINT_THRESHOLDS,
+                checkpoint_dir=str(checkpoint_dir),
+                eval_env=eval_env,
+                best_model_save_path=str(out.parent / "best_model"),
+                log_path=str(out.parent / "logs"),
+                eval_freq=5_000,
+                n_eval_episodes=50,
+                deterministic=True,
+                render=False,
+                verbose=0,
+            ),
+            ProgressCallback(args.timesteps),
+        ]
+
+        model.learn(
+            total_timesteps=args.timesteps,
+            callback=callbacks,
+            reset_num_timesteps=True,
+        )
+
         model.save(str(out))
-        print(f"Model saved → {out}.zip")
+        print(f"Final model saved → {out}.zip")
         wandb.run.summary["model_path"] = str(out)
+
+        env.close()
+        eval_env.close()
 
 
 if __name__ == "__main__":

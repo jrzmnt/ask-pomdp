@@ -1,9 +1,5 @@
 #!/usr/bin/env bash
-# Tune threshold τ via Optuna and evaluate ASK (PPO + SLM gated).
-# Runs for both Qwen 0.5B and 1.5B.
-# Output: results/ask_qwen_{0.5b,1.5b}_results.json
-#         results/ask_qwen_{0.5b,1.5b}_episodes.csv
-#         optuna.db
+# Tune τ via Optuna and evaluate ASK — Qwen3.5-2B and Qwen3.5-4B.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -11,7 +7,9 @@ source .venv/bin/activate
 
 echo "[eval_ask] Tuning τ (15 Optuna trials) and evaluating ASK"
 
-python eval_ppo_slm.py --mode ask --slm 0.5b --wandb-group main
-python eval_ppo_slm.py --mode ask --slm 1.5b --wandb-group main
+for SLM in qwen3.5-2b qwen3.5-4b; do
+    echo "  → $SLM"
+    python eval_ppo_slm.py --mode ask --slm "$SLM" --wandb-group fourrooms
+done
 
-echo "[eval_ask] Done → results/ask_qwen_*.json"
+echo "[eval_ask] Done → results/ask_*.json"

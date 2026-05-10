@@ -54,8 +54,14 @@ class HuggingFaceSLM:
                                     pad_token_id=self.tokenizer.pad_token_id)
 
     def generate(self, prompt: str, decoding: Dict[str, Any]) -> SLMOutput:
+        system = decoding.get("system")
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+
         formatted = self.tokenizer.apply_chat_template(
-            [{"role": "user", "content": prompt}],
+            messages,
             tokenize=False,
             add_generation_prompt=True,
             **self._chat_template_kwargs,
@@ -68,11 +74,16 @@ class HuggingFaceSLM:
                 **inputs,
                 max_new_tokens=decoding["max_tokens"],
                 do_sample=False,
+                repetition_penalty=decoding.get("repetition_penalty", 1.1),
                 pad_token_id=self.tokenizer.pad_token_id,
             )
 
         new_ids = generated_ids[:, input_len:]
         text = self.tokenizer.decode(new_ids[0], skip_special_tokens=True).strip()
+
+        # Strip any leaked thinking block (safety fallback for Qwen3)
+        if "</think>" in text:
+            text = text.split("</think>", 1)[-1].strip()
 
         return SLMOutput(text=text, logits=torch.empty(0), cost=float(new_ids.numel()))
 

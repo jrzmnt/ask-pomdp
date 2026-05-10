@@ -1,171 +1,189 @@
 # Methodology — ASK-POMDP
 
-## Environment
+## Overview
 
-**MiniGrid-FourRooms-v0**
+We evaluate the ASK framework — uncertainty-gated language assistance for reinforcement learning — under partial observability. Three agent types are compared across two environments: a PPO baseline, an SLM-only baseline, and the ASK method (PPO + SLM gated by MC Dropout uncertainty). All agents are evaluated on the same fixed test seeds to ensure fair comparison.
 
-- 19×19 grid with four rooms connected by doorways
-- Agent receives a 7×7 egocentric partial observation (147-dim flat vector after normalization)
-- Action space: TURN_LEFT (0), TURN_RIGHT (1), FORWARD (2)
-- Episode ends when the agent reaches the goal or hits `max_steps=500`
-- Reward: +1 on goal, 0 otherwise (sparse)
-- Seed controls agent start position and goal position; map layout is fixed
+---
+
+## Environments
+
+### FourRooms (MiniGrid)
+
+- **Task:** navigate a 19×19 grid with four rooms connected by doorways to reach a goal.
+- **Partial observability:** agent receives only a 7×7 egocentric view (147-dimensional flat vector after normalization). Walls, doors, and unseen cells are included; the full map is never observed.
+- **Action space:** TURN_LEFT (0), TURN_RIGHT (1), FORWARD (2).
+- **Reward:** +1 on goal, 0 otherwise (sparse). Episode terminates at goal or `max_steps=500`.
+- **Metric:** mean reward and episode length.
+
+### HigherLower (POPGym)
+
+- **Task:** predict whether the next card drawn is higher or lower than the current one, across a full 52-card deck.
+- **Partial observability:** at each step the agent sees only the current card rank (discrete int 0–12). The full deck history is not provided in the observation — the agent must reason about it.
+- **Action space:** HIGHER (0), LOWER (1).
+- **Reward:** +1/52 for correct prediction, −1/52 for incorrect, 0 for a push (equal rank). An episode spans one full deck shuffle.
+- **Metric:** mean reward and accuracy (fraction of correct decisions).
+- **Memory requirement:** optimal play requires card counting — tracking all previously seen cards. The SLM prompt exposes this information explicitly; PPO must learn it implicitly via memory in the policy.
 
 ---
 
 ## Episode Splits
 
-All splits are non-overlapping and defined solely by the random seed passed to `env.reset(seed=s)`.
+All splits are non-overlapping and defined solely by the seed passed to `env.reset(seed=s)`.
 
-| Split      | Seeds   | Size | Purpose                             |
-|------------|---------|------|-------------------------------------|
-| Validation | 0–99    | 100  | Optuna threshold search (τ) for ASK |
-| Test       | 100–299 | 200  | Final evaluation of **all** agents  |
+| Split      | Seeds   | Size | Purpose                              |
+|------------|---------|------|--------------------------------------|
+| Validation | 0–99    | 100  | Optuna threshold search (τ) for ASK  |
+| Test       | 100–199 | 100  | Final evaluation of **all** agents   |
 
-PPO, SLM-only and ASK are all evaluated on the same test seeds (100–299), ensuring a fair comparison. The Optuna validation set (0–99) is never used for final reporting.
-
-Training uses SB3's internal environment seeding (non-deterministic across episodes), which is disjoint from both evaluation splits by design.
+PPO, SLM-only, and ASK are all evaluated on the same test seeds (100–199). The validation set (0–99) is used only for Optuna and is never reported as a final result.
 
 ---
 
 ## Agents
 
 ### PPO (baseline)
-- DropoutActorCriticPolicy, net_arch [256, 256], dropout_rate 0.2
-- Trained for 5M steps on MiniGrid-FourRooms-v0 (`eval/mean_reward=0.81`, `success_rate=93%`)
-- At test time: deterministic action, dropout **disabled** (`set_training_mode(False)`)
 
-### SLM-only (baseline)
-- Models: Qwen2.5-0.5B-Instruct, Qwen2.5-1.5B-Instruct, Qwen3-0.6B, Qwen3-1.7B
-- Off-the-shelf, no fine-tuning, thinking mode disabled for Qwen3 (`enable_thinking=False`)
-- At each step: prompt with 7×7 ASCII view + facing direction → parse one-word action
-- No PPO suggestion included (pure SLM decision)
-- Invalid output → fallback to FORWARD
+- Policy: `DropoutActorCriticPolicy` — standard MLP actor-critic with MC Dropout support.
+- Architecture: `net_arch = [256, 256]` (shared MLP), `dropout_rate = 0.2`.
+- Trained with PPO (SB3) for **2M steps** on FourRooms and **500K steps** on HigherLower.
+- Optimizer: Adam, `lr = 3e-4`; `n_steps = 2048`, `batch_size = 64`.
+- At test time: deterministic action, dropout **disabled** (`mlp_extractor.eval()`).
 
-### ASK (main method)
-- PPO + SLM gated by MC Dropout uncertainty
-- At each step:
-  1. Compute PPO action (deterministic)
-  2. Estimate total entropy via N MC forward passes (dropout **enabled** during passes)
-  3. If `total_entropy ≥ τ` → query SLM with PPO suggestion in prompt
-  4. If SLM returns a valid action, use it; otherwise keep PPO action
-- τ selected via Optuna on the validation split; final eval on the test split
-- Models: Qwen2.5-0.5B-Instruct, Qwen2.5-1.5B-Instruct, Qwen3-0.6B, Qwen3-1.7B
+#### PPO Optimality Ablation
+
+To study how ASK behaves as PPO quality degrades, we snapshot models at reward thresholds during training using `RewardThresholdCheckpointCallback`. Each snapshot is saved the first time mean eval reward crosses a threshold, guaranteeing qualitative diversity rather than arbitrary step intervals.
+
+| Environment | Thresholds |
+|-------------|------------|
+| FourRooms   | 0.1, 0.3, 0.5, 0.7 |
+| HigherLower | 0.1, 0.2, 0.3, 0.4 |
+
+Each checkpoint is evaluated with all three agent types. The x-axis in the ablation charts is the checkpoint reward level.
+
+Checkpoint metadata saved alongside each `.zip`: `reward_threshold`, `eval_reward`, `training_steps`, `n_eval_episodes`, `saved_at`.
 
 ---
 
-## Prompt Design
+### SLM-only (baseline)
 
-**SLM-only:** receives the 7×7 ASCII egocentric grid and facing direction. No PPO suggestion — the SLM acts as the sole decision maker.
+- Models: **Qwen/Qwen3.5-2B** and **Qwen/Qwen3.5-4B** (off-the-shelf, no fine-tuning).
+- Thinking mode disabled: `enable_thinking=False` in `apply_chat_template`.
+- At each step: full prompt (see below) → parse one-word action.
+- No PPO suggestion in the prompt (pure LM decision).
+- Invalid output → fallback to FORWARD (FourRooms) or HIGHER (HigherLower).
+- **Intervention Rate = 1.0 by construction** (SLM called at every step).
 
-**ASK:** same prompt plus `PPO autopilot suggests: <ACTION>`. The SLM acts as a consultant that can confirm or override the PPO.
+---
+
+### ASK (main method)
+
+PPO and SLM are combined via uncertainty-gated switching:
+
+1. Compute the PPO action deterministically (dropout off).
+2. Run **N = 30 MC Dropout forward passes** (dropout enabled in `mlp_extractor`) to estimate action distribution uncertainty.
+3. If `total_entropy ≥ τ` → query the SLM, including PPO's suggestion in the prompt.
+4. If SLM returns a valid action, use it (overwrite); otherwise keep PPO's action.
+
+The **Intervention Rate** (IR = `slm_called / steps`) measures how often ASK defers to the SLM. The **Overwrite Rate** (OR = `slm_overwrites / steps`) measures how often SLM actually changed the PPO action.
 
 ---
 
 ## Uncertainty Estimation (MC Dropout)
 
 ```
-total_entropy   = H(E_θ[p(a|o)])   — entropy of mean action distribution
-aleatoric       = E_θ[H(p(a|o))]   — expected entropy under each sample
-epistemic       = total - aleatoric — BALD approximation
+total_entropy   = H(E_θ[p(a|o)])    — entropy of mean distribution (bits, log₂)
+aleatoric       = E_θ[H(p(a|o))]    — mean entropy per MC sample
+epistemic       = total − aleatoric  — BALD approximation
 ```
 
-- N=30 MC samples by default (ablation varies this)
-- MLP extractor set to `train()` mode during passes to activate dropout; restored after
+The `mlp_extractor` is set to `train()` during the N passes and restored to `eval()` after. The policy head itself remains in eval mode. `total_entropy` is the gating signal.
 
 ---
 
 ## Threshold Selection (Optuna)
 
-- 15 trials, search space τ ∈ [0.1, 2.0] (uniform, TPE sampler)
-- Objective: maximize mean reward on the validation split (seeds 0–99)
-- Storage: `sqlite:///optuna.db` (resumable across runs with `load_if_exists=True`)
-- Best τ saved to `results/thresholds.json`, W&B run config, and results JSON
-- To reuse a threshold: `--threshold <value>` skips Optuna entirely
+- Sampler: TPE, 15 trials, search space `τ ∈ [0.1, 2.0]` (uniform).
+- Objective: maximize mean reward (FourRooms) or mean accuracy (HigherLower) on validation seeds 0–99.
+- Storage: `sqlite:///optuna.db` (resumable with `load_if_exists=True`).
+- Best τ saved to `results/thresholds.json` (FourRooms) and `higher_lower/results/thresholds.json` (HigherLower).
+- **SLM and PPO model are loaded once** before the Optuna study; the same objects are reused across all 15 trials and the final evaluation pass (avoids repeated `torch.compile` overhead).
+- Structured key format: `{env}_{model}` for main runs, `{env}_{model}_{ckpt_tag}` for checkpoint ablation.
+
+---
+
+## Prompt Design
+
+### FourRooms
+
+```
+Grid maze (A=you  .=floor  #=wall  G=goal  ?=unseen  D=door).
+Facing NORTH. Output one word: TURN_LEFT, TURN_RIGHT, or FORWARD.
+
+#######
+#.....#
+#..A..#     ← 7×7 egocentric ASCII view
+...
+Goal: visible (3 ahead, 2 right). Path ahead: passable.
+[PPO suggests: FORWARD]   ← ASK only; omitted for SLM-only
+```
+
+### HigherLower
+
+```
+Higher/Lower card game (A=lowest, K=highest).
+Output one word: HIGHER or LOWER.
+
+Card=A, 48 higher, 0 lower → HIGHER      ← 6 few-shot examples
+Card=4, 39 higher, 8 lower → HIGHER
+...
+Card=9, 8 higher, 38 lower → LOWER
+
+Card=7, 22 higher, 26 lower →[PPO suggests: LOWER]   ← ASK only
+```
+
+The HigherLower prompt includes the remaining deck composition (cards above and below current rank), enabling explicit card-counting reasoning. Few-shot examples are fixed and not derived from the episode.
 
 ---
 
 ## Metrics
 
-Per-episode schema is identical across all agents (PPO fields default to 0):
-
-| Metric | Formula | PPO | SLM-only | ASK |
-|--------|---------|:---:|:--------:|:---:|
+| Metric | Definition | PPO | SLM | ASK |
+|--------|-----------|:---:|:---:|:---:|
 | Reward | episode return | ✓ | ✓ | ✓ |
-| Success Rate | reward > 0 | ✓ | ✓ | ✓ |
-| Episode Length | steps until done | ✓ | ✓ | ✓ |
-| Mean Length (success) | mean steps on successful eps | ✓ | ✓ | ✓ |
-| IR | slm\_called / steps | 0 | 1.0 | computed |
-| OR | slm\_overwrites / steps | 0 | nan | computed |
-| slm\_valid\_rate | valid\_outputs / slm\_called | 0 | 1−invalid | computed |
-| invalid\_action\_rate | invalid\_outputs / slm\_called | 0 | computed | computed |
-| episode\_time\_s | wall clock per episode | ✓ | ✓ | ✓ |
-| seed | env seed used | ✓ | ✓ | ✓ |
+| Accuracy | fraction correct decisions (HL only) | ✓ | ✓ | ✓ |
+| Episode Length | steps until termination (FR only) | ✓ | ✓ | ✓ |
+| IR | `slm_called / steps` | 0 | 1.0 | computed |
+| OR | `slm_overwrites / steps` | 0 | — | computed |
+| SLM Valid Rate | `valid_outputs / slm_called` | — | ✓ | ✓ |
 
-All aggregated metrics reported as mean ± std over 200 test episodes.
-
----
-
-## Preliminary Results
-
-| Agent | Model | Reward ↑ | Success ↑ | IR | OR |
-|-------|-------|:--------:|:---------:|:--:|:--:|
-| PPO | — | 0.87 ± 0.24 | 93% | — | — |
-| SLM-only | Qwen2.5-0.5B | 0.04 ± 0.17 | 4% | 1.00 | — |
-| SLM-only | Qwen2.5-1.5B | 0.00 ± 0.00 | 0% | 1.00 | — |
-| SLM-only | Qwen3-0.6B | 0.00 ± 0.00 | 0% | 1.00 | — |
-| SLM-only | Qwen3-1.7B | 0.00 ± 0.00 | 0% | 1.00 | — |
-| ASK τ=0.55 | Qwen2.5-0.5B | 0.84 ± 0.29 | 89.5% | 0.14 | 0.10 |
-| ASK τ=0.92 | Qwen2.5-1.5B | 0.87 ± 0.24 | 93% | 0.03 | 0.00 |
-| ASK τ=1.00 | Qwen3-0.6B | 0.83 ± 0.29 | 90.0% | 0.01 | 0.01 |
-| ASK τ=1.48 | Qwen3-1.7B | 0.87 ± 0.24 | 93.0% | 0.00 | 0.00 |
-
----
-
-## Ablations
-
-### 1. Threshold τ (`ablation_threshold.sh`)
-- Fix τ ∈ {0.1, 0.3, 0.5, 0.7, 0.9, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0} (skips Optuna)
-- Representative models: Qwen2.5-1.5B and Qwen3-1.7B
-- Measures how IR, OR and reward change as τ varies
-- **Expected:** low τ → high IR/OR, hurts performance (SLM is bad); high τ → IR→0, reward→PPO
-- W&B group: `ablation_threshold`
-
-### 2. MC Samples N (`ablation_mc_samples.sh`)
-- Fix τ = Optuna best (from `results/thresholds.json`); vary N ∈ {5, 10, 20, 30, 50}
-- Representative models: Qwen2.5-1.5B and Qwen3-1.7B
-- Measures effect on reward and wall-clock time
-- **Expected:** N≥20 should converge; lower N trades uncertainty quality for speed
-- W&B group: `ablation_mc_samples`
-
-### 3. Always-Ask (`ablation_always_ask.sh`)
-- τ = 0 → SLM queried every step (IR = 1.0 by construction)
-- All four models: Qwen2.5-0.5B, Qwen2.5-1.5B, Qwen3-0.6B, Qwen3-1.7B
-- Upper bound on SLM influence; shows that indiscriminate querying is suboptimal
-- **Expected:** always-ask ≈ SLM-only performance (bad), confirming gating is necessary
-- W&B group: `ablation_always_ask`
+All metrics reported as mean ± std over 100 test episodes (seeds 100–199).
 
 ---
 
 ## Reproducibility
 
-- Global seed: 42 (Python, NumPy, PyTorch, SB3)
-- All eval seeds fixed and logged in W&B run config and per-episode CSV
-- Model checkpoint: `runs/ppo/model.zip` and `runs/ppo/best_model/`
-- Per-episode logs: `results/*.csv`; summaries: `results/*.json`
-- Optuna studies: `optuna.db` (resumable); best thresholds: `results/thresholds.json`
+| Item | Value |
+|------|-------|
+| Global seed | 42 (Python, NumPy, PyTorch, SB3) |
+| Test seeds | 100–199 (fixed, logged in W&B config) |
+| Val seeds | 0–99 (Optuna only) |
+| PPO checkpoints | `runs/ppo/checkpoints/model_reward_*.zip` + `*_meta.json` |
+| HL checkpoints | `runs/higher_lower/checkpoints/model_reward_*.zip` + `*_meta.json` |
+| Optuna DB | `optuna.db` (resumable) |
+| Thresholds | `results/thresholds.json`, `higher_lower/results/thresholds.json` |
+| Result CSVs | `results/*.csv`, `higher_lower/results/*.csv` |
+| LM weights | Hugging Face Hub — no fine-tuning, no local weights stored |
 
 ---
 
 ## W&B Organization
 
-| Group | job_type | Runs |
-|-------|----------|------|
-| `main` | `eval_ppo` | PPO baseline |
-| `main` | `eval_slm` | SLM-only (Qwen2.5-0.5B, Qwen2.5-1.5B, Qwen3-0.6B, Qwen3-1.7B) |
-| `main` | `eval_ask` | ASK main result (all four models) |
-| `ablation_threshold` | `ablation` | τ sweep (Qwen2.5-1.5B, Qwen3-1.7B) |
-| `ablation_mc_samples` | `ablation` | N sweep (Qwen2.5-1.5B, Qwen3-1.7B) |
-| `ablation_always_ask` | `ablation` | τ=0 (all four models) |
+| Group | Runs |
+|-------|------|
+| `fourrooms` | PPO baseline, SLM-only (2B, 4B), ASK (2B, 4B) — FourRooms main results |
+| `fourrooms_checkpoints` | Checkpoint ablation — FourRooms (4 PPO optimality levels × 3 agents) |
+| `higherlower` | PPO baseline, SLM-only (2B, 4B), ASK (2B, 4B) — HigherLower main results |
+| `higherlower_checkpoints` | Checkpoint ablation — HigherLower (4 PPO optimality levels × 3 agents) |
 
-Each run logs: summary metrics to `run.summary`, per-episode `wandb.Table`, full config, and Optuna trial history (ASK only).
+All runs log: summary metrics to `run.summary` and full config (model path, τ, N MC samples, seed splits, n_episodes). W&B project: `ask-pomdp-v2`.

@@ -15,6 +15,7 @@ import csv
 import gc
 import json
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -36,19 +37,21 @@ from higher_lower.env import ACTIONS_STR, HigherLowerEnv, _STR_TO_ACTION
 
 console = Console()
 
-WANDB_PROJECT = "ask-pomdp"
+WANDB_PROJECT = "ask-pomdp-v2"
 
 QWEN_MODELS = {
-    "0.5b":       "Qwen/Qwen2.5-0.5B-Instruct",
-    "1.5b":       "Qwen/Qwen2.5-1.5B-Instruct",
-    "qwen3-0.6b": "Qwen/Qwen3-0.6B",
-    "qwen3-1.7b": "Qwen/Qwen3-1.7B",
+    "0.5b":         "Qwen/Qwen2.5-0.5B-Instruct",
+    "1.5b":         "Qwen/Qwen2.5-1.5B-Instruct",
+    "qwen3-0.6b":   "Qwen/Qwen3-0.6B",
+    "qwen3-1.7b":   "Qwen/Qwen3-1.7B",
+    "qwen3.5-2b":   "Qwen/Qwen3.5-2B",
+    "qwen3.5-4b":   "Qwen/Qwen3.5-4B",
 }
 
-DECODING = {"max_tokens": 5}
+DECODING = {"max_tokens": 10}
 
 N_EVAL_EPISODES = 100
-N_TEST_EPISODES = 200
+N_TEST_EPISODES = 100
 N_MC_SAMPLES = 30
 
 RESULTS_DIR = Path("higher_lower/results")
@@ -62,6 +65,8 @@ RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 def short_model_name(model_name: str) -> str:
     name = model_name.lower().replace("/", "-").replace("_", "-").replace(".", "")
     for pattern, tag in [
+        ("qwen35-4b",  "qwen35_4b"),
+        ("qwen35-2b",  "qwen35_2b"),
         ("qwen3-06b",  "qwen3_0.6b"),
         ("qwen3-17b",  "qwen3_1.7b"),
         ("qwen25-05b", "qwen25_0.5b"),
@@ -131,16 +136,22 @@ def save_summary(data: Dict, path: Path) -> None:
     console.print(f"  Saved → {path}")
 
 
-def save_threshold(model_name: str, study_name: str, threshold: float, reward: float) -> None:
+def save_threshold(key: str, entry: Dict[str, Any]) -> None:
+    """Persist Optuna threshold under a structured key.
+
+    Key format:
+      main run       → "higherlower_{model_tag}"
+      ckpt ablation  → "higherlower_{model_tag}_{ckpt_tag}"
+    """
     path = RESULTS_DIR / "thresholds.json"
     registry: Dict = {}
     if path.exists():
         with open(path) as f:
             registry = json.load(f)
-    registry[model_name] = {"threshold": threshold, "optuna_study": study_name, "eval_reward": reward}
+    registry[key] = entry
     with open(path, "w") as f:
         json.dump(registry, f, indent=2)
-    console.print(f"  Threshold saved → {path}")
+    console.print(f"  Threshold saved → {path} [{key}]")
 
 
 def wandb_log_episodes(run, logs: List[Dict]) -> None:
@@ -305,16 +316,10 @@ def eval_ask(model: PPO, slm, threshold: float, n_episodes: int,
     return float(np.mean([l["reward"] for l in logs])), logs
 
 
-def objective(trial, model_path, slm_cfg, n_eval_episodes, n_mc_samples):
+def objective(trial, model, slm, n_eval_episodes, n_mc_samples):
     threshold = trial.suggest_float("threshold", 0.01, 1.5)
-    model = PPO.load(model_path, device="cuda" if torch.cuda.is_available() else "cpu")
-    slm = load_slm(slm_cfg)
     mean_reward, _ = eval_ask(model, slm, threshold, n_eval_episodes, seed_offset=0,
                                n_mc_samples=n_mc_samples)
-    del model, slm
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
     return mean_reward
 
 
@@ -325,7 +330,7 @@ def objective(trial, model_path, slm_cfg, n_eval_episodes, n_mc_samples):
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--mode", choices=["ppo", "slm", "ask"], default="ppo")
-    p.add_argument("--slm", choices=list(QWEN_MODELS.keys()), default="1.5b")
+    p.add_argument("--slm", choices=list(QWEN_MODELS.keys()), default="qwen3.5-2b")
     p.add_argument("--threshold", type=float, default=None)
     p.add_argument("--n-mc", type=int, default=N_MC_SAMPLES, dest="n_mc")
     p.add_argument("--n-episodes", type=int, default=N_TEST_EPISODES, dest="n_episodes")
@@ -333,7 +338,7 @@ def parse_args():
     p.add_argument("--n-optuna-trials", type=int, default=15, dest="n_optuna_trials")
     p.add_argument("--model-path", type=str, default="runs/higher_lower/model", dest="model_path")
     p.add_argument("--tag", type=str, default="")
-    p.add_argument("--wandb-group", type=str, default="higher_lower", dest="wandb_group")
+    p.add_argument("--wandb-group", type=str, default="higherlower", dest="wandb_group")
     return p.parse_args()
 
 
@@ -344,15 +349,26 @@ def main() -> None:
 
     file_tag = f"_{args.tag}" if args.tag else ""
 
+    # Extract checkpoint reward from tag (e.g. "ckpt_r030" → 0.30)
+    checkpoint_reward = None
+    if args.tag.startswith("ckpt_r"):
+        try:
+            checkpoint_reward = int(args.tag[6:]) / 100.0
+        except ValueError:
+            pass
+
     if args.mode == "ppo":
         console.rule("[bold cyan]PPO — HigherLower[/bold cyan]")
+        cfg_ppo = {"env": "HigherLowerEasy", "n_episodes": args.n_episodes}
+        if checkpoint_reward is not None:
+            cfg_ppo["checkpoint_reward"] = checkpoint_reward
         with wandb.init(project=WANDB_PROJECT, name=f"hl_eval_ppo{file_tag}",
-                        group=args.wandb_group, job_type="eval_ppo",
-                        config={"env": "HigherLowerEasy", "n_episodes": args.n_episodes}):
+                        group=args.wandb_group, job_type="eval_ppo", config=cfg_ppo):
             summary, logs = eval_ppo(args.model_path, args.n_episodes, seed_offset=N_EVAL_EPISODES)
             _print_summary_table("PPO results", summary)
+            if checkpoint_reward is not None:
+                summary["checkpoint_reward"] = checkpoint_reward
             wandb.run.summary.update(summary)
-            wandb_log_episodes(wandb.run, logs)
             save_summary(summary, RESULTS_DIR / f"ppo_results{file_tag}.json")
             save_csv(logs, RESULTS_DIR / f"ppo_episodes{file_tag}.csv")
 
@@ -361,14 +377,16 @@ def main() -> None:
         tag = short_model_name(model_name)
         cfg = slm_cfg_for(model_name)
         console.rule(f"[bold cyan]SLM-only — {tag} — HigherLower[/bold cyan]")
+        cfg_slm = {"env": "HigherLowerEasy", "slm_model": model_name, "n_episodes": args.n_episodes}
+        if checkpoint_reward is not None:
+            cfg_slm["checkpoint_reward"] = checkpoint_reward
         with wandb.init(project=WANDB_PROJECT, name=f"hl_eval_slm_{tag}{file_tag}",
-                        group=args.wandb_group, job_type="eval_slm",
-                        config={"env": "HigherLowerEasy", "slm_model": model_name,
-                                "n_episodes": args.n_episodes}):
+                        group=args.wandb_group, job_type="eval_slm", config=cfg_slm):
             summary, logs = eval_slm_only(cfg, args.n_episodes, seed_offset=N_EVAL_EPISODES)
             _print_summary_table(f"SLM {tag} results", summary)
+            if checkpoint_reward is not None:
+                summary["checkpoint_reward"] = checkpoint_reward
             wandb.run.summary.update(summary)
-            wandb_log_episodes(wandb.run, logs)
             save_summary(summary, RESULTS_DIR / f"slm_{tag}_results{file_tag}.json")
             save_csv(logs, RESULTS_DIR / f"slm_{tag}_episodes{file_tag}.csv")
 
@@ -386,8 +404,11 @@ def main() -> None:
             study_name = f"hl_ask_{tag}{file_tag}"
             study = optuna.create_study(direction="maximize", storage="sqlite:///optuna.db",
                                         study_name=study_name, load_if_exists=True)
+            # Load model + SLM once — reused across all trials and final eval
+            _opt_model = PPO.load(args.model_path, device="cuda" if torch.cuda.is_available() else "cpu")
+            _opt_slm = load_slm(cfg)
             study.optimize(
-                lambda t: objective(t, args.model_path, cfg, args.n_eval_episodes, args.n_mc),
+                lambda t: objective(t, _opt_model, _opt_slm, args.n_eval_episodes, args.n_mc),
                 n_trials=args.n_optuna_trials, show_progress_bar=True,
             )
             best_threshold = study.best_params["threshold"]
@@ -396,18 +417,36 @@ def main() -> None:
                 f"eval reward = [green]{study.best_value:.4f}[/green]",
                 title="Optuna result", border_style="cyan",
             ))
-            save_threshold(model_name, study_name, best_threshold, study.best_value)
+            threshold_key = f"higherlower_{tag}" + (f"_{args.tag}" if args.tag else "")
+            save_threshold(threshold_key, {
+                "threshold":       best_threshold,
+                "optuna_study":    study_name,
+                "eval_reward":     study.best_value,
+                "model_path":      args.model_path,
+                "slm_model":       model_name,
+                "n_trials":        args.n_optuna_trials,
+                "n_mc_samples":    args.n_mc,
+                "n_eval_episodes": args.n_eval_episodes,
+                "env":             "HigherLowerEasy",
+                "saved_at":        datetime.now().isoformat(),
+            })
+        else:
+            # Fixed threshold path: load fresh
+            _opt_model = PPO.load(args.model_path, device="cuda" if torch.cuda.is_available() else "cpu")
+            _opt_slm = load_slm(cfg)
 
+        cfg_ask = {
+            "env": "HigherLowerEasy", "slm_model": model_name,
+            "threshold": best_threshold, "n_mc_samples": args.n_mc,
+            "n_episodes": args.n_episodes,
+        }
+        if checkpoint_reward is not None:
+            cfg_ask["checkpoint_reward"] = checkpoint_reward
         with wandb.init(project=WANDB_PROJECT, name=f"hl_eval_ask_{tag}{file_tag}",
-                        group=args.wandb_group, job_type="eval_ask",
-                        config={"env": "HigherLowerEasy", "slm_model": model_name,
-                                "threshold": best_threshold, "n_mc_samples": args.n_mc,
-                                "n_episodes": args.n_episodes}):
-            model = PPO.load(args.model_path, device="cuda" if torch.cuda.is_available() else "cpu")
-            slm = load_slm(cfg)
-            _, logs = eval_ask(model, slm, best_threshold, args.n_episodes,
+                        group=args.wandb_group, job_type="eval_ask", config=cfg_ask):
+            _, logs = eval_ask(_opt_model, _opt_slm, best_threshold, args.n_episodes,
                                seed_offset=N_EVAL_EPISODES, n_mc_samples=args.n_mc)
-            del model, slm
+            del _opt_model, _opt_slm
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -420,11 +459,10 @@ def main() -> None:
                 "slm_valid_rate": float(np.mean([l["slm_valid_rate"] for l in logs])),
                 "invalid_action_rate": float(np.mean([l["invalid_action_rate"] for l in logs])),
             })
+            if checkpoint_reward is not None:
+                summary["checkpoint_reward"] = checkpoint_reward
             _print_summary_table(f"ASK {tag} results", summary)
             wandb.run.summary.update(summary)
-            wandb_log_episodes(wandb.run, logs)
-            if study is not None:
-                wandb_log_optuna_trials(wandb.run, study)
             save_summary(summary, RESULTS_DIR / f"ask_{tag}_results{file_tag}.json")
             save_csv(logs, RESULTS_DIR / f"ask_{tag}_episodes{file_tag}.csv")
 

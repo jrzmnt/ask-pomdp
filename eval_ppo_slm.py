@@ -23,6 +23,7 @@ import csv
 import gc
 import json
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -49,19 +50,21 @@ console = Console()
 # Constants
 # =============================================================================
 
-WANDB_PROJECT = "ask-pomdp"
+WANDB_PROJECT = "ask-pomdp-v2"
 
 QWEN_MODELS = {
-    "0.5b":       "Qwen/Qwen2.5-0.5B-Instruct",
-    "1.5b":       "Qwen/Qwen2.5-1.5B-Instruct",
-    "qwen3-0.6b": "Qwen/Qwen3-0.6B",
-    "qwen3-1.7b": "Qwen/Qwen3-1.7B",
+    "0.5b":         "Qwen/Qwen2.5-0.5B-Instruct",
+    "1.5b":         "Qwen/Qwen2.5-1.5B-Instruct",
+    "qwen3-0.6b":   "Qwen/Qwen3-0.6B",
+    "qwen3-1.7b":   "Qwen/Qwen3-1.7B",
+    "qwen3.5-2b":   "Qwen/Qwen3.5-2B",
+    "qwen3.5-4b":   "Qwen/Qwen3.5-4B",
 }
 
-DECODING = {"max_tokens": 5}  # one action word fits in ≤3 tokens; 5 gives safe margin
+DECODING = {"max_tokens": 10}
 
 N_EVAL_EPISODES = 100
-N_TEST_EPISODES = 200
+N_TEST_EPISODES = 100
 N_MC_SAMPLES = 30
 
 RESULTS_DIR = Path("results")
@@ -73,37 +76,80 @@ ACTIONS_STR = ["TURN_LEFT", "TURN_RIGHT", "FORWARD"]
 # Prompt
 # =============================================================================
 
-PROMPT_TEMPLATE = """\
-You are an agent in a partially observable grid world navigating to goal G.
+def _parse_grid_features(grid: str) -> dict:
+    """Extract key navigation features from the 7×7 egocentric ASCII view.
 
-Your 7×7 egocentric view (you are at row 6, col 3, facing toward row 0):
-{grid}
-
-Facing: {direction}
-{ppo_line}
-Legend: A=you  .=floor  #=wall  D=door  G=goal  ?=unseen
-
-Actions: TURN_LEFT  TURN_RIGHT  FORWARD
-- FORWARD: move one step in the direction you are facing
-- TURN_LEFT / TURN_RIGHT: rotate 90° in place
-- You cannot pass through walls (#) or closed doors (D)
-
-If you see the goal (G), navigate toward it.
-If blocked ahead, turn to find an open path.
-Explore unseen areas (?).
-
-Output EXACTLY one word: TURN_LEFT or TURN_RIGHT or FORWARD\
-"""
+    In MiniGrid's egocentric view the agent is always at row 6, col 3,
+    facing toward row 0 (i.e. 'ahead' is always upward in the grid string).
+    """
+    lines = grid.split('\n')
+    ahead = lines[5][3] if len(lines) >= 6 and len(lines[5]) > 3 else '?'
+    goal_pos = None
+    for r, line in enumerate(lines):
+        for c, ch in enumerate(line):
+            if ch == 'G':
+                goal_pos = (r, c)
+    return {'ahead': ahead, 'goal': goal_pos}
 
 
 def build_prompt(env: FourRoomsEnv, ppo_action: int | None = None) -> str:
     grid = env.render_view_ascii()
     direction = DIR_TO_STR.get(env.agent_dir, "UNKNOWN")
-    ppo_line = (
-        f"PPO autopilot suggests: {ACTIONS_STR[ppo_action]}\n"
-        if ppo_action is not None else ""
-    )
-    return PROMPT_TEMPLATE.format(grid=grid, direction=direction, ppo_line=ppo_line)
+    features = _parse_grid_features(grid)
+
+    ahead_passable = features['ahead'] not in ('#', 'D')
+    ahead_desc = "passable" if ahead_passable else "BLOCKED"
+
+    goal = features['goal']
+    if goal:
+        rows_ahead = 6 - goal[0]
+        cols_lr    = goal[1] - 3
+        if cols_lr > 0:
+            goal_desc = f"visible ({rows_ahead} ahead, {cols_lr} right)"
+        elif cols_lr < 0:
+            goal_desc = f"visible ({rows_ahead} ahead, {abs(cols_lr)} left)"
+        else:
+            goal_desc = f"visible ({rows_ahead} ahead, straight)"
+    else:
+        goal_desc = "not visible"
+
+    ppo_line = f"\nAutopilot suggests: {ACTIONS_STR[ppo_action]}" if ppo_action is not None else ""
+
+    return f"""\
+You are a robot navigation policy.
+Your task is to choose exactly ONE action.
+
+VALID ACTIONS:
+TURN_LEFT
+TURN_RIGHT
+FORWARD
+
+RULES:
+- Do NOT explain.
+- Do NOT add text or markdown.
+- If the path ahead is BLOCKED, do not choose FORWARD.
+- If the goal is visible, prioritize moving toward it.
+- If the autopilot suggestion is safe, follow it.
+
+CURRENT VIEW (A=you  .=floor  #=wall  G=goal  ?=unseen  D=door):
+{grid}
+
+STATE:
+Facing: {direction}
+Path ahead: {ahead_desc}
+Goal: {goal_desc}{ppo_line}
+
+Examples:
+ahead=passable, goal visible (3 ahead, straight) → FORWARD
+ahead=passable, goal visible (2 ahead, 2 right) → TURN_RIGHT
+ahead=passable, goal visible (2 ahead, 2 left) → TURN_LEFT
+ahead=BLOCKED, goal to the right → TURN_RIGHT
+ahead=BLOCKED, no goal visible → TURN_LEFT
+
+OUTPUT FORMAT (MANDATORY):
+TURN_LEFT or TURN_RIGHT or FORWARD
+
+Action: """
 
 
 # =============================================================================
@@ -134,6 +180,8 @@ def set_torch_seed(seed: int) -> None:
 def short_model_name(model_name: str) -> str:
     name = model_name.lower().replace("/", "-").replace("_", "-").replace(".", "")
     for pattern, tag in [
+        ("qwen35-4b",  "qwen35_4b"),
+        ("qwen35-2b",  "qwen35_2b"),
         ("qwen3-06b",  "qwen3_0.6b"),
         ("qwen3-17b",  "qwen3_1.7b"),
         ("qwen25-05b", "qwen25_0.5b"),
@@ -364,29 +412,18 @@ def eval_ask(
 
 def objective(
     trial: optuna.Trial,
-    model_path: str,
-    slm_cfg: Dict[str, Any],
+    model: "PPO",
+    slm: "HuggingFaceSLM",
     n_eval_episodes: int,
     n_mc_samples: int,
 ) -> float:
     threshold = trial.suggest_float("threshold", 0.1, 2.0)
-
-    model = PPO.load(model_path, device="cuda" if torch.cuda.is_available() else "cpu")
-    slm = load_slm(slm_cfg)
-
     mean_reward, _ = eval_ask(
         model=model, slm=slm, threshold=threshold,
         n_episodes=n_eval_episodes, seed_offset=0, n_mc_samples=n_mc_samples,
     )
-
     if mean_reward >= 0.999:
         trial.study.stop()
-
-    del model, slm
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
     return mean_reward
 
 
@@ -409,20 +446,22 @@ def save_summary(data: Dict[str, Any], path: Path) -> None:
     print(f"  Saved → {path}")
 
 
-def save_threshold(model_name: str, study_name: str, threshold: float, reward: float) -> None:
+def save_threshold(key: str, entry: Dict[str, Any]) -> None:
+    """Persist Optuna threshold under a structured key.
+
+    Key format:
+      main run       → "fourrooms_{model_tag}"
+      ckpt ablation  → "fourrooms_{model_tag}_{ckpt_tag}"
+    """
     path = RESULTS_DIR / "thresholds.json"
     registry: Dict[str, Any] = {}
     if path.exists():
         with open(path) as f:
             registry = json.load(f)
-    registry[model_name] = {
-        "threshold":    threshold,
-        "optuna_study": study_name,
-        "eval_reward":  reward,
-    }
+    registry[key] = entry
     with open(path, "w") as f:
         json.dump(registry, f, indent=2)
-    console.print(f"  Threshold saved → {path}")
+    console.print(f"  Threshold saved → {path} [{key}]")
 
 
 def wandb_log_summary(run, data: Dict[str, Any]) -> None:
@@ -465,7 +504,7 @@ def wandb_log_optuna_trials(run, study: "optuna.Study") -> None:
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Evaluate PPO / SLM / ASK on MiniGrid-FourRooms")
     p.add_argument("--mode", choices=["ppo", "slm", "ask", "all"], default="all")
-    p.add_argument("--slm", choices=["0.5b", "1.5b", "qwen3-0.6b", "qwen3-1.7b", "all"], default="all")
+    p.add_argument("--slm", choices=list(QWEN_MODELS.keys()) + ["all"], default="all")
     p.add_argument("--threshold", type=float, default=None,
                    help="Fixed τ — skips Optuna")
     p.add_argument("--n-mc", type=int, default=N_MC_SAMPLES, dest="n_mc")
@@ -475,8 +514,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--model-path", type=str, default=None, dest="model_path")
     p.add_argument("--tag", type=str, default="",
                    help="Suffix for output files, e.g. 'mc10'")
-    p.add_argument("--wandb-group", type=str, default=None, dest="wandb_group",
-                   help="W&B run group (e.g. 'main', 'ablation_threshold')")
+    p.add_argument("--wandb-group", type=str, default="fourrooms", dest="wandb_group",
+                   help="W&B run group")
     return p.parse_args()
 
 
@@ -491,11 +530,18 @@ def main() -> None:
 
     model_path = resolve_model_path(args.model_path)
     file_tag = f"_{args.tag}" if args.tag else ""
-    slm_keys = ["0.5b", "1.5b"] if args.slm == "all" else [args.slm]
+    slm_keys = ["qwen3.5-2b", "qwen3.5-4b"] if args.slm == "all" else [args.slm]
 
-    # Determine W&B group and job_type from context
+    # Extract checkpoint reward from tag (e.g. "ckpt_r030" → 0.30)
+    checkpoint_reward = None
+    if args.tag.startswith("ckpt_r"):
+        try:
+            checkpoint_reward = int(args.tag[6:]) / 100.0
+        except ValueError:
+            pass
+
     is_ablation = bool(args.tag)
-    group = args.wandb_group or ("ablation" if is_ablation else "main")
+    group = args.wandb_group
     job_type_ask = "ablation" if is_ablation else "eval_ask"
 
     # -------------------------------------------------------------------------
@@ -503,21 +549,24 @@ def main() -> None:
     # -------------------------------------------------------------------------
     if args.mode in ("ppo", "all"):
         console.rule("[bold cyan]PPO baseline[/bold cyan]")
+        cfg_ppo = {
+            "env": "MiniGrid-FourRooms-v0",
+            "n_episodes": args.n_episodes,
+        }
+        if checkpoint_reward is not None:
+            cfg_ppo["checkpoint_reward"] = checkpoint_reward
         with wandb.init(
             project=WANDB_PROJECT,
             name=f"eval_ppo{file_tag}",
             group=group,
             job_type="eval_ppo",
-            config={
-                "experiment": "ppo_baseline",
-                "env": "MiniGrid-FourRooms-v0",
-                "n_episodes": args.n_episodes,
-            },
+            config=cfg_ppo,
         ):
             summary, logs = eval_ppo(model_path, n_episodes=args.n_episodes, seed_offset=N_EVAL_EPISODES)
             _print_summary_table("PPO results", summary)
+            if checkpoint_reward is not None:
+                summary["checkpoint_reward"] = checkpoint_reward
             wandb_log_summary(wandb.run, summary)
-            wandb_log_episodes(wandb.run, logs)
             save_summary(summary, RESULTS_DIR / f"ppo_results{file_tag}.json")
             save_csv(logs, RESULTS_DIR / f"ppo_episodes{file_tag}.csv")
 
@@ -532,35 +581,37 @@ def main() -> None:
         # --- SLM-only ---
         if args.mode in ("slm", "all"):
             console.rule(f"[bold cyan]SLM-only — {tag}[/bold cyan]")
+            cfg_slm = {
+                "env": "MiniGrid-FourRooms-v0",
+                "slm_model": model_name,
+                "n_episodes": args.n_episodes,
+            }
+            if checkpoint_reward is not None:
+                cfg_slm["checkpoint_reward"] = checkpoint_reward
             with wandb.init(
                 project=WANDB_PROJECT,
                 name=f"eval_slm_{tag}{file_tag}",
                 group=group,
                 job_type="eval_slm",
-                config={
-                    "experiment": "slm_baseline",
-                    "env": "MiniGrid-FourRooms-v0",
-                    "slm_model": model_name,
-                    "n_episodes": args.n_episodes,
-                },
+                config=cfg_slm,
             ):
                 summary, logs = eval_slm_only(cfg, n_episodes=args.n_episodes, seed_offset=N_EVAL_EPISODES)
                 _print_summary_table(f"SLM {tag} results", summary)
                 wandb_log_summary(wandb.run, summary)
-                wandb_log_episodes(wandb.run, logs)
                 save_summary(summary, RESULTS_DIR / f"slm_{tag}_results{file_tag}.json")
                 save_csv(logs, RESULTS_DIR / f"slm_{tag}_episodes{file_tag}.csv")
 
         # --- ASK ---
         if args.mode in ("ask", "all"):
             wandb_cfg = {
-                "experiment": f"ask_{args.tag}" if args.tag else "ask_main",
                 "env": "MiniGrid-FourRooms-v0",
                 "slm_model": model_name,
                 "n_mc_samples": args.n_mc,
                 "n_episodes": args.n_episodes,
                 "n_eval_episodes": args.n_eval_episodes,
             }
+            if checkpoint_reward is not None:
+                wandb_cfg["checkpoint_reward"] = checkpoint_reward
 
             study = None
             if args.threshold is not None:
@@ -577,8 +628,11 @@ def main() -> None:
                     study_name=study_name,
                     load_if_exists=True,
                 )
+                # Load model + SLM once — reused across all trials and final eval
+                _opt_model = PPO.load(model_path, device="cuda" if torch.cuda.is_available() else "cpu")
+                _opt_slm = load_slm(cfg)
                 study.optimize(
-                    lambda t: objective(t, model_path, cfg, args.n_eval_episodes, args.n_mc),
+                    lambda t: objective(t, _opt_model, _opt_slm, args.n_eval_episodes, args.n_mc),
                     n_trials=args.n_optuna_trials,
                     show_progress_bar=True,
                 )
@@ -596,7 +650,19 @@ def main() -> None:
                 wandb_cfg["optuna_study_name"] = study_name
                 wandb_cfg["optuna_best_reward"] = study.best_value
                 wandb_cfg["optuna_n_trials"] = args.n_optuna_trials
-                save_threshold(model_name, study_name, best_threshold, study.best_value)
+                threshold_key = f"fourrooms_{tag}" + (f"_{args.tag}" if args.tag else "")
+                save_threshold(threshold_key, {
+                    "threshold":       best_threshold,
+                    "optuna_study":    study_name,
+                    "eval_reward":     study.best_value,
+                    "model_path":      str(model_path),
+                    "slm_model":       model_name,
+                    "n_trials":        args.n_optuna_trials,
+                    "n_mc_samples":    args.n_mc,
+                    "n_eval_episodes": args.n_eval_episodes,
+                    "env":             "MiniGrid-FourRooms-v0",
+                    "saved_at":        datetime.now().isoformat(),
+                })
 
             with wandb.init(
                 project=WANDB_PROJECT,
@@ -605,16 +671,18 @@ def main() -> None:
                 job_type=job_type_ask,
                 config=wandb_cfg,
             ):
-                model = PPO.load(model_path, device="cuda" if torch.cuda.is_available() else "cpu")
-                slm = load_slm(cfg)
+                if args.threshold is not None:
+                    # Fixed threshold path: load fresh
+                    _opt_model = PPO.load(model_path, device="cuda" if torch.cuda.is_available() else "cpu")
+                    _opt_slm = load_slm(cfg)
 
                 _, logs = eval_ask(
-                    model=model, slm=slm, threshold=best_threshold,
+                    model=_opt_model, slm=_opt_slm, threshold=best_threshold,
                     n_episodes=args.n_episodes, seed_offset=args.n_eval_episodes,
                     n_mc_samples=args.n_mc,
                 )
 
-                del model, slm
+                del _opt_model, _opt_slm
                 gc.collect()
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
@@ -630,11 +698,10 @@ def main() -> None:
                     "slm_valid_rate":     float(np.mean([l["slm_valid_rate"] for l in logs])),
                     "invalid_action_rate": float(np.mean([l["invalid_action_rate"] for l in logs])),
                 })
+                if checkpoint_reward is not None:
+                    summary["checkpoint_reward"] = checkpoint_reward
                 _print_summary_table(f"ASK {tag} results", summary)
                 wandb_log_summary(wandb.run, summary)
-                wandb_log_episodes(wandb.run, logs)
-                if study is not None:
-                    wandb_log_optuna_trials(wandb.run, study)
                 save_summary(summary, RESULTS_DIR / f"ask_{tag}_results{file_tag}.json")
                 save_csv(logs, RESULTS_DIR / f"ask_{tag}_episodes{file_tag}.csv")
 

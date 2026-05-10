@@ -1,0 +1,107 @@
+version: 1.1
+kind: operation
+
+# W&B and HuggingFace credentials must be set as Polyaxon secrets or env vars.
+# Configure them in the Polyaxon UI under: Project > Settings > Environment
+
+name: ask-pomdp-full-pipeline
+description: >
+  Full ASK-POMDP pipeline: train PPO + eval (SLM-only, ASK, checkpoint ablation)
+  on FourRooms and HigherLower. Submits results to W&B project ask-pomdp-v2.
+
+tags: [ask, pomdp, fourrooms, higherlower, prl-workshop]
+
+params:
+  skip_fr_train:
+    value: "0"
+    description: "Set to 1 to skip FourRooms training (reuse existing model)"
+  skip_hl_train:
+    value: "0"
+    description: "Set to 1 to skip HigherLower training (reuse existing model)"
+  skip_install:
+    value: "0"
+    description: "Set to 1 if image already has all dependencies installed"
+
+component:
+  run:
+    kind: job
+    environment:
+      # ── GPU ────────────────────────────────────────────────────────────────
+      resources:
+        gpu: 1       # adjust to available GPU count; 1x A100/A6000 recommended
+        memory: 32Gi # 4B model needs ~12GB VRAM + OS overhead
+
+    # ── Container ────────────────────────────────────────────────────────────
+    container:
+      image: "YOUR_IMAGE:TAG"   # <-- replace with your custom image
+      imagePullPolicy: IfNotPresent
+      workingDir: /project       # adjust if your code is mounted elsewhere
+
+      env:
+        # Credentials — set via Polyaxon secret manager, not hardcoded here
+        - name: WANDB_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: ml-secrets       # <-- your Polyaxon secret name
+              key: WANDB_API_KEY
+
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: ml-secrets
+              key: HF_TOKEN
+
+        # Pipeline flags from params
+        - name: SKIP_FR_TRAIN
+          value: "{{ skip_fr_train }}"
+        - name: SKIP_HL_TRAIN
+          value: "{{ skip_hl_train }}"
+        - name: SKIP_INSTALL
+          value: "{{ skip_install }}"
+
+        # Keep HF models in a persistent cache volume
+        - name: HF_HOME
+          value: /cache/huggingface
+
+        # W&B offline mode fallback — set to "true" if no internet egress
+        # - name: WANDB_MODE
+        #   value: offline
+
+      # ── Volume mounts ──────────────────────────────────────────────────────
+      # Uncomment and configure to match your cluster PVC names.
+      #
+      # volumeMounts:
+      #   - name: code-pvc
+      #     mountPath: /project
+      #   - name: hf-cache-pvc
+      #     mountPath: /cache/huggingface
+      #   - name: results-pvc
+      #     mountPath: /project/runs
+
+      command:
+        - /bin/bash
+        - -c
+        - |
+          set -euo pipefail
+
+          # ── Code: clone or use mounted PVC ─────────────────────────────────
+          # Option A — git clone (enable if repo is not in the image/PVC):
+          # git clone https://github.com/YOUR_ORG/ask-pomdp.git /project
+          # cd /project
+
+          # Option B — code is already at /project via PVC (default)
+          cd /project
+
+          chmod +x scripts/run_all_from_scratch.sh
+          bash scripts/run_all_from_scratch.sh
+
+  # ── Volumes (Kubernetes PVCs) ───────────────────────────────────────────────
+  # Uncomment and configure to match your cluster.
+  #
+  # volumes:
+  #   - name: hf-cache-pvc
+  #     persistentVolumeClaim:
+  #       claimName: hf-model-cache
+  #   - name: results-pvc
+  #     persistentVolumeClaim:
+  #       claimName: ask-pomdp-results
