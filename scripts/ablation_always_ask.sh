@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# Ablation: always ask (τ = 0, IR = 100%).
+# Ablation: always ask (τ = 0, IR = 100%) — FourRooms.
 #
 # Demonstrates that indiscriminate SLM querying is suboptimal
 # compared to uncertainty-gated querying (optimal τ from Optuna).
-# Runs for all four models across both families.
 #
 # Output: results/ask_*_results_always_ask.json
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 source .venv/bin/activate
+export PYTHONPATH="$(pwd)"
 
 echo "[ablation_always_ask] Evaluating ASK with τ=0 (always query SLM)"
 
-for SLM in 0.5b 1.5b qwen3-0.6b qwen3-1.7b; do
+for SLM in qwen3.5-2b qwen3.5-4b; do
     echo ""
     echo "  Model: ${SLM}"
     python eval_ppo_slm.py \
@@ -21,7 +21,7 @@ for SLM in 0.5b 1.5b qwen3-0.6b qwen3-1.7b; do
         --slm "${SLM}" \
         --threshold 0.0 \
         --tag "always_ask" \
-        --wandb-group ablation_always_ask
+        --wandb-group fourrooms_ablation_always_ask
 done
 
 echo ""

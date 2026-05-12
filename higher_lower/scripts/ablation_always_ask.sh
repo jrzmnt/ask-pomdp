@@ -14,7 +14,7 @@ export PYTHONPATH="$(pwd)"
 
 echo "[hl_ablation_always_ask] Evaluating ASK with τ=0 (always query SLM)"
 
-for SLM in 0.5b 1.5b qwen3-0.6b qwen3-1.7b; do
+for SLM in qwen3.5-2b qwen3.5-4b; do
     echo ""
     echo "  Model: ${SLM}"
     python higher_lower/eval.py \
@@ -22,7 +22,7 @@ for SLM in 0.5b 1.5b qwen3-0.6b qwen3-1.7b; do
         --slm "${SLM}" \
         --threshold 0.0 \
         --tag "always_ask" \
-        --wandb-group hl_ablation_always_ask
+        --wandb-group higherlower_ablation_always_ask
 done
 
 echo ""
