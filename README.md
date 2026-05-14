@@ -13,37 +13,42 @@
 
 ## Results
 
-*Pending — run `bash scripts/run_fourrooms.sh` and `bash scripts/run_higherlower.sh`.*
+Values below are taken from the JSON summaries in `results/` and `higher_lower/results/` (typically 100 test episodes). ASK rows stay empty until `ask_qwen35_*_results.json` exist.
 
 ### FourRooms — Main comparison
 
 | Agent | Model | Reward ↑ | Success ↑ | Ep. Length ↓ | IR | OR |
 |-------|-------|:--------:|:---------:|:------------:|:--:|:--:|
-| PPO | — | — | — | — | — | — |
-| SLM-only | Qwen3.5-2B | — | — | — | 1.00 | — |
-| SLM-only | Qwen3.5-4B | — | — | — | 1.00 | — |
+| PPO | — | 0.504 | 0.53 | 249.5 | — | — |
+| SLM-only | Qwen3.5-2B | 0.303 | 0.34 | 350.5 | 1.00 | — |
+| SLM-only | Qwen3.5-4B | 0.571 | 0.69 | 221.2 | 1.00 | — |
 | ASK | Qwen3.5-2B | — | — | — | — | — |
 | ASK | Qwen3.5-4B | — | — | — | — | — |
+
+Sources: `results/ppo_results.json`; `results/slm_qwen35_2b_results.json` and `results/slm_qwen35_4b_results.json` (stateful prompt + rationale). An older SLM-only 2B run (`slm_qwen35_2b_results2.json`) scored 0 reward / 500 length and is omitted from the main table.
 
 ### HigherLower — Main comparison
 
 | Agent | Model | Reward ↑ | Accuracy ↑ | IR | OR |
 |-------|-------|:--------:|:----------:|:--:|:--:|
-| PPO | — | — | — | — | — |
-| SLM-only | Qwen3.5-2B | — | — | 1.00 | — |
-| SLM-only | Qwen3.5-4B | — | — | 1.00 | — |
+| PPO | — | 0.495 | 0.723 | — | — |
+| SLM-only | Qwen3.5-2B | — | — | — | — |
+| SLM-only | Qwen3.5-4B | — | — | — | — |
 | ASK | Qwen3.5-2B | — | — | — | — |
 | ASK | Qwen3.5-4B | — | — | — | — |
 
+Source: `higher_lower/results/ppo_results.json`.
+
 ### PPO Optimality Ablation
 
-Effect of training quality on ASK intervention rate and reward.  
-*Pending checkpoint ablation — see W&B group `fourrooms_checkpoints` / `higherlower_checkpoints`.*
+Effect of training quality on ASK intervention rate and reward. Only a FourRooms PPO-at-low-return checkpoint summary is in-repo so far; ASK columns remain to be filled after checkpoint ASK runs.
 
 | Checkpoint | Env | PPO Reward | ASK-2B Reward | IR-2B | ASK-4B Reward | IR-4B |
 |------------|-----|:----------:|:-------------:|:-----:|:-------------:|:-----:|
-| 10K / 500K steps | HL / FR | — | — | — | — | — |
-| … | … | … | … | … | … | … |
+| `ppo_results_ckpt_r010.json` (target mean return ≈ 0.1) | FourRooms | 0.183 | — | — | — | — |
+| *(HigherLower + further FR ckpts)* | — | — | — | — | — | — |
+
+See W&B groups `fourrooms_checkpoints` / `higherlower_checkpoints` for full sweeps.
 
 ---
 

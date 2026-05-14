@@ -100,6 +100,15 @@ def test_env_agent_dir():
     env.close()
 
 
+def test_env_agent_pos_abs():
+    env = FourRoomsEnv()
+    env.reset(seed=0)
+    x, y = env.agent_pos_abs
+    w, h = env._env.unwrapped.width, env._env.unwrapped.height
+    assert 0 <= x < w and 0 <= y < h
+    env.close()
+
+
 # =============================================================================
 # PPO + uncertainty
 # =============================================================================
@@ -199,13 +208,19 @@ def test_eval_ask_never_ask(tiny_model, mock_slm):
 
 
 def test_prompt_build():
-    from eval_ppo_slm import build_prompt
+    from eval_ppo_slm import build_prompt, new_episode_state, update_episode_state
     env = FourRoomsEnv()
     env.reset(seed=0)
-    prompt = build_prompt(env, ppo_action=2)
+    prompt = build_prompt(env, None, ppo_action=2, prompt_style="basic")
     assert "FORWARD" in prompt
     assert "TURN_LEFT" in prompt
     assert "TURN_RIGHT" in prompt
+    p2 = build_prompt(env, None, None, prompt_style="enriched")
+    assert "ACTION PREVIEW" in p2
+    st = new_episode_state()
+    update_episode_state(st, env, None)
+    p3 = build_prompt(env, st, None, prompt_style="stateful_min")
+    assert "World position" in p3
     env.close()
 
 
@@ -217,3 +232,11 @@ def test_parse_action():
     assert parse_action("  forward  ") == 2
     assert parse_action("nonsense") is None
     assert parse_action("") is None
+
+
+def test_parse_action_rationale_prefers_action_line():
+    from eval_ppo_slm import parse_action
+    text = "Reason: I want to go left first\nAction: TURN_RIGHT"
+    assert parse_action(text, rationale=True) == 1
+    text2 = "Reason: mention TURN_LEFT in text\nAction: FORWARD"
+    assert parse_action(text2, rationale=True) == 2

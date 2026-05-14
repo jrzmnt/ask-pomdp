@@ -10,6 +10,11 @@ Usage:
 
 from __future__ import annotations
 
+import os
+import sys
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import argparse
 import csv
 import gc
@@ -399,6 +404,8 @@ def main() -> None:
         if args.threshold is not None:
             best_threshold = args.threshold
             console.rule(f"[bold cyan]ASK — {tag} τ={best_threshold:.4f} (fixed)[/bold cyan]")
+            _opt_model = PPO.load(args.model_path, device="cuda" if torch.cuda.is_available() else "cpu")
+            _opt_slm = load_slm(cfg)
         else:
             console.rule(f"[bold cyan]ASK — {tag} Optuna ({args.n_optuna_trials} trials)[/bold cyan]")
             study_name = f"hl_ask_{tag}{file_tag}"
@@ -430,10 +437,6 @@ def main() -> None:
                 "env":             "HigherLowerEasy",
                 "saved_at":        datetime.now().isoformat(),
             })
-        else:
-            # Fixed threshold path: load fresh
-            _opt_model = PPO.load(args.model_path, device="cuda" if torch.cuda.is_available() else "cpu")
-            _opt_slm = load_slm(cfg)
 
         cfg_ask = {
             "env": "HigherLowerEasy", "slm_model": model_name,
