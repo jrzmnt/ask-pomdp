@@ -240,3 +240,58 @@ def test_parse_action_rationale_prefers_action_line():
     assert parse_action(text, rationale=True) == 1
     text2 = "Reason: mention TURN_LEFT in text\nAction: FORWARD"
     assert parse_action(text2, rationale=True) == 2
+
+
+# =============================================================================
+# HigherLower prompt enrichment
+# =============================================================================
+
+
+def test_hl_prompt_styles():
+    from higher_lower.env import HigherLowerEnv
+
+    env = HigherLowerEnv()
+    env.reset(seed=0)
+    basic = env.build_prompt(prompt_style="basic")
+    assert "HIGHER" in basic and "LOWER" in basic
+    assert "Cards remaining strictly higher" in basic
+    assert "Recommended" not in basic
+
+    enriched = env.build_prompt(prompt_style="enriched")
+    assert "Recommended" in enriched
+    assert "P(next strictly higher" in enriched
+
+    env.reset(seed=1)
+    for _ in range(3):
+        _, _, term, trunc, _ = env.step(0)
+        if term or trunc:
+            break
+    stateful = env.build_prompt(prompt_style="stateful", prompt_history=4)
+    assert "Recent decisions" in stateful
+    assert "Win streak" in stateful
+    env.close()
+
+
+def test_hl_parse_action_rationale():
+    from higher_lower.eval import parse_action
+
+    assert (
+        parse_action("Reason: HIGHER looks tempting\nAction: LOWER", rationale=True) == 1
+    )
+    assert parse_action("LOWER", rationale=True) == 1
+    assert parse_action("Reason: x\nAction: HIGHER", rationale=True) == 0
+
+
+def test_hl_episode_state_history():
+    from higher_lower.env import HigherLowerEnv
+
+    env = HigherLowerEnv()
+    env.reset(seed=0)
+    assert len(env._actions) == 0
+    assert len(env._outcomes) == 0
+    env.step(0)
+    assert len(env._actions) == 1
+    assert len(env._outcomes) == 1
+    assert len(env._history_cards) == 1
+    assert len(env._seen) >= 2
+    env.close()

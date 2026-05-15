@@ -41,6 +41,7 @@ for R in "${REWARDS[@]}"; do
         --tag "${TAG}" \
         --wandb-group higherlower_checkpoints
 
+
     for SLM in qwen3.5-2b qwen3.5-4b; do
         echo "  → ASK eval (${SLM})"
         python higher_lower/eval.py \
@@ -49,7 +50,9 @@ for R in "${REWARDS[@]}"; do
             --model-path "${MODEL}" \
             --tag "${TAG}" \
             --n-optuna-trials 10 \
-            --wandb-group higherlower_checkpoints
+            --wandb-group higherlower_checkpoints \
+            --prompt-style stateful \
+            --prompt-rationale
     done
     echo ""
 done
