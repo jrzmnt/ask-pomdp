@@ -13,7 +13,7 @@
 
 ## Results
 
-Summaries from JSON files in [`results/`](results/) and [`higher_lower/results/`](higher_lower/results/) (typically **100** test episodes; prompt ablations on FourRooms use **25** episodes). See [`experiments.md`](experiments.md) for the full checklist and per-file metrics.
+Summaries from JSON in [`results/`](results/) and [`higher_lower/results/`](higher_lower/results/) (typically **100** test episodes). Details and checklist: [`experiments.md`](experiments.md).
 
 ### FourRooms — Main comparison
 
@@ -23,9 +23,9 @@ Summaries from JSON files in [`results/`](results/) and [`higher_lower/results/`
 | SLM-only | Qwen3.5-2B | 0.303 | 0.34 | 350.5 | 1.00 | — |
 | SLM-only | Qwen3.5-4B | 0.571 | 0.69 | 221.2 | 1.00 | — |
 | ASK | Qwen3.5-2B | **0.642** | **0.70** | **182.2** | 0.21 | 0.02 |
-| ASK | Qwen3.5-4B | — | — | — | — | — |
+| ASK | Qwen3.5-4B | 0.621 | 0.69 | 193.3 | 0.25 | 0.02 |
 
-ASK 2B uses Optuna τ ≈ 0.48 (`results/thresholds.json`). SLM rows use `prompt_style=stateful` and `prompt_rationale=true`. ASK 4B not yet in `results/`.
+ASK (full PPO) beats the PPO baseline on reward and success; SLM prompts use `stateful` + `prompt_rationale`.
 
 ### HigherLower — Main comparison
 
@@ -37,11 +37,7 @@ ASK 2B uses Optuna τ ≈ 0.48 (`results/thresholds.json`). SLM rows use `prompt
 | ASK | Qwen3.5-2B | 0.522 | 0.737 | 0.69 | 0.06 |
 | ASK | Qwen3.5-4B | 0.519 | 0.735 | 0.60 | 0.05 |
 
-ASK/SLM prompts: `stateful` + `prompt_rationale` (see JSON metadata). PPO and ASK trained/evaluated on `runs/higher_lower/model`.
-
-### Prompt ablation — FourRooms (SLM-only, Qwen3.5-2B)
-
-25 episodes per condition (`scripts/run_prompt_ablation.sh`). Main 100-ep SLM run (stateful + rationale) shown for comparison.
+### Prompt ablation — FourRooms (SLM-only, Qwen3.5-2B, 25 ep)
 
 | Prompt style | Rationale | Reward ↑ | Success ↑ | Ep. Length ↓ |
 |--------------|-----------|:--------:|:---------:|:------------:|
@@ -52,29 +48,28 @@ ASK/SLM prompts: `stateful` + `prompt_rationale` (see JSON metadata). PPO and AS
 | stateful | yes | 0.269 | 0.32 | 368.4 |
 | stateful + rationale *(100 ep)* | yes | **0.303** | **0.34** | **350.5** |
 
-`enriched` alone timed out every episode at max length; **stateful + rationale** is the best 25-ep variant and matches the production SLM prompt for full evals.
+### Prompt ablation — HigherLower
 
-### Prompt ablation — HigherLower (SLM-only)
+No tagged ablation JSONs yet; production SLM/ASK use **stateful + rationale** (100 ep): SLM-2B 0.513 reward / 0.732 acc., SLM-4B 0.525 / 0.738. Run `bash scripts/run_hl_prompt_ablation.sh` for `basic` / `enriched` / `stateful` sweeps.
 
-No tagged ablation JSONs in `higher_lower/results/` yet. Production SLM/ASK runs use **stateful** prompt with **rationale** (100 ep):
+### PPO optimality ablation (checkpoint training target)
 
-| Agent | Model | Prompt | Reward ↑ | Accuracy ↑ |
-|-------|-------|--------|:--------:|:----------:|
-| SLM-only | Qwen3.5-2B | stateful + rationale | 0.513 | 0.732 |
-| SLM-only | Qwen3.5-4B | stateful + rationale | 0.525 | 0.738 |
+**FourRooms** — PPO eval + ASK (Optuna, 10 trials per ckpt on weak PPO):
 
-Run `bash scripts/run_hl_prompt_ablation.sh` to populate `basic` / `enriched` / `stateful` / `stateful_rat` rows (25 ep).
+| Ckpt target | PPO Reward | Success | ASK-2B Reward | Success | IR-2B | ASK-4B Reward | Success | IR-4B |
+|:-----------:|:----------:|:-------:|:-------------:|:-------:|:-----:|:-------------:|:-------:|:-----:|
+| 0.1 | 0.183 | 0.19 | 0.338 | 0.36 | 0.55 | 0.345 | 0.38 | 0.73 |
+| 0.3 | 0.203 | 0.21 | 0.378 | 0.40 | 0.41 | 0.405 | 0.45 | 0.45 |
+| 0.5 | 0.451 | 0.47 | 0.567 | 0.62 | 0.45 | — | — | — |
+| Full | 0.504 | 0.53 | **0.642** | **0.70** | 0.21 | 0.621 | 0.69 | 0.25 |
 
-### PPO optimality ablation (checkpoint reward ≈ 0.1)
+**HigherLower** — weak PPO checkpoints (r010–r040) share PPO reward ≈ 0.473 / acc. ≈ 0.712; ASK often queries every step (IR ≈ 1.0) on the weakest policies:
 
-| Checkpoint | Env | PPO Reward | PPO Acc. / Success | ASK-2B Reward | ASK-2B Acc. / Success | IR-2B | OR-2B |
-|------------|-----|:----------:|:------------------:|:-------------:|:---------------------:|:-----:|:-----:|
-| Full model | FourRooms | 0.504 | 0.53 succ. | 0.642 | 0.70 succ. | 0.21 | 0.02 |
-| `ckpt_r010` | FourRooms | 0.183 | 0.19 succ. | — | — | — | — |
-| Full model | HigherLower | 0.495 | 0.723 acc. | 0.522 | 0.737 acc. | 0.69 | 0.06 |
-| `ckpt_r010` | HigherLower | 0.473 | 0.712 acc. | 0.512 | 0.732 acc. | 1.00 | 0.13 |
-
-FourRooms ASK on weak PPO checkpoint not yet run. HigherLower ASK-4B on ckpt: not in repo (only 2B ckpt ASK JSON present).
+| Ckpt target | ASK-2B Reward | Acc. | IR-2B | ASK-4B Reward | Acc. | IR-4B |
+|:-----------:|:-------------:|:----:|:-----:|:-------------:|:----:|:-----:|
+| 0.1–0.3 | 0.512 | 0.732 | 1.00 | 0.520 | 0.736 | 1.00 |
+| 0.4 | 0.523 | 0.737 | 0.83 | 0.520 | 0.736 | 1.00 |
+| Full | 0.522 | 0.737 | 0.69 | 0.519 | 0.735 | 0.60 |
 
 ---
 
@@ -88,36 +83,26 @@ wandb login
 ## Running experiments
 
 ```bash
-# Full pipelines (train + eval + checkpoint ablation)
-bash scripts/run_fourrooms.sh     # ~13–15h on RTX 3060
-bash scripts/run_higherlower.sh   # ~6h on RTX 3060
-
-# Prompt ablations (25 ep, Qwen3.5-2B)
+bash scripts/run_fourrooms.sh
+bash scripts/run_higherlower.sh
 bash scripts/run_prompt_ablation.sh
 bash scripts/run_hl_prompt_ablation.sh
-
-# Or step by step:
-bash scripts/train.sh
-bash scripts/eval_ppo.sh
-bash scripts/eval_slm.sh
-bash scripts/eval_ask.sh
-bash scripts/eval_checkpoints.sh
 ```
 
 ## Project structure
 
 ```
 src/ask/
-  envs/fourrooms.py       # MiniGrid wrapper (147-dim obs, ASCII view)
-  uncertainty/entropy.py  # MC Dropout uncertainty estimation
-  slm/model.py            # HuggingFace SLM wrapper (Qwen family)
-  utils/ppo.py            # DropoutActorCriticPolicy (MC Dropout)
-train_ppo.py              # PPO training (FourRooms)
-eval_ppo_slm.py           # Eval: PPO / SLM / ASK + Optuna (FourRooms)
+  envs/fourrooms.py
+  uncertainty/entropy.py
+  slm/model.py
+  utils/ppo.py
+train_ppo.py
+eval_ppo_slm.py
 higher_lower/
-  env.py                  # POPGym HigherLower wrapper + prompt memory
-  train.py                # PPO training with staged checkpoints
-  eval.py                 # Eval: PPO / SLM / ASK + Optuna
+  env.py
+  train.py
+  eval.py
 scripts/
   run_fourrooms.sh
   run_higherlower.sh
