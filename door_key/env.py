@@ -6,6 +6,13 @@ Actions: TURN_LEFT(0), TURN_RIGHT(1), FORWARD(2), PICKUP(3), DROP(4), TOGGLE(5),
 Reward: 1 - 0.9*(steps/max_steps) on success, 0 on failure.
 
 Sequential subtasks: find key → PICKUP → find door → TOGGLE (unlock) → reach goal.
+
+Seed protocol (stable methodology):
+  TRAIN_SEEDS = 200–999   (800 maps; never used in val/test)
+  VAL_SEEDS   = 0–99      (Optuna τ search)
+  TEST_SEEDS  = 100–199   (final reported results)
+
+Use SeededDoorKeyEnv to enforce these ranges automatically.
 """
 
 from __future__ import annotations
@@ -17,6 +24,11 @@ import minigrid  # noqa: F401 — registers MiniGrid environments
 import numpy as np
 
 SIZES = {5: 250, 6: 360, 8: 640, 16: 2560}
+
+# Seed ranges — keep disjoint to prevent map leakage across splits.
+TRAIN_SEEDS = range(200, 1000)   # 800 maps
+VAL_SEEDS   = range(0,   100)    # 100 maps — Optuna tau search
+TEST_SEEDS  = range(100, 200)    # 100 maps — final reported results
 
 ACTIONS = ["TURN_LEFT", "TURN_RIGHT", "FORWARD", "PICKUP", "DROP", "TOGGLE", "DONE"]
 _STR_TO_ACTION: Dict[str, int] = {a: i for i, a in enumerate(ACTIONS)}
@@ -187,3 +199,24 @@ Action: """
     @staticmethod
     def _flatten(raw_obs: Dict) -> np.ndarray:
         return (raw_obs["image"].astype(np.float32) / 10.0).flatten()
+
+
+class SeededDoorKeyEnv(DoorKeyEnv):
+    """DoorKeyEnv that cycles through a fixed seed range when reset without an explicit seed.
+
+    Use this to enforce train/val/test map splits:
+      SeededDoorKeyEnv(size=5, seeds=TRAIN_SEEDS)  # training
+      SeededDoorKeyEnv(size=5, seeds=VAL_SEEDS)    # eval callback during training
+      # Final eval uses DoorKeyEnv + explicit seeds in eval.py loops
+    """
+
+    def __init__(self, size: int = 5, seeds: range = TRAIN_SEEDS):
+        super().__init__(size=size)
+        self._seed_pool = list(seeds)
+        self._seed_idx = 0
+
+    def reset(self, seed: Optional[int] = None, **kwargs) -> Tuple[np.ndarray, Dict]:
+        if seed is None:
+            seed = self._seed_pool[self._seed_idx % len(self._seed_pool)]
+            self._seed_idx += 1
+        return super().reset(seed=seed, **kwargs)

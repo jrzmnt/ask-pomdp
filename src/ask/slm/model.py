@@ -23,7 +23,7 @@ def _is_qwen3x(model_name: str) -> bool:
 
 
 class HuggingFaceSLM:
-    def __init__(self, model_name: str, device: str, dtype: str):
+    def __init__(self, model_name: str, device: str, dtype: str, thinking: bool = False):
         torch_dtype = {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}[dtype]
 
         self.model_name = model_name
@@ -37,10 +37,10 @@ class HuggingFaceSLM:
             trust_remote_code=True,
         )
         self.model.eval()
-        # Disable thinking mode for Qwen3/3.5 — without this the model generates
-        # hundreds of <think> tokens before the answer, making inference ~10x slower.
+        # thinking=True: Qwen3/3.5 generates <think>…</think> before the action.
+        # thinking=False: disables chain-of-thought (faster, needed when max_tokens is small).
         self._chat_template_kwargs: Dict[str, Any] = (
-            {"enable_thinking": False} if _is_qwen3x(model_name) else {}
+            {"enable_thinking": thinking} if _is_qwen3x(model_name) else {}
         )
         # Compile reduces per-call Python/CUDA overhead across 96k+ generate calls.
         self.model = torch.compile(self.model, mode="reduce-overhead")
@@ -95,4 +95,5 @@ def load_slm(cfg: Dict[str, Any]) -> HuggingFaceSLM:
         model_name=cfg["model"],
         device=cfg.get("device", "auto"),
         dtype=cfg.get("dtype", "float16"),
+        thinking=cfg.get("thinking", False),
     )

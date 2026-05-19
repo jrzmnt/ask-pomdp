@@ -23,7 +23,7 @@ from stable_baselines3.common.monitor import Monitor
 from ask.utils.callbacks import RewardThresholdCheckpointCallback
 from ask.utils.ppo import DropoutActorCriticPolicy
 from ask.utils.seed import set_seed
-from door_key.env import DoorKeyEnv
+from door_key.env import SeededDoorKeyEnv, TRAIN_SEEDS, VAL_SEEDS
 
 # Reward thresholds. DoorKey max reward ≈ 1.0 (perfect play, step 1/max_steps).
 CHECKPOINT_THRESHOLDS = [0.3, 0.5, 0.7, 0.9]
@@ -78,8 +78,9 @@ def main() -> None:
             "dropout_rate": 0.2,
         },
     ):
-        env = Monitor(DoorKeyEnv(size=args.size))
-        eval_env = Monitor(DoorKeyEnv(size=args.size))
+        # Enforce seed splits: train on maps 200-999, eval callback on maps 0-99.
+        env = Monitor(SeededDoorKeyEnv(size=args.size, seeds=TRAIN_SEEDS))
+        eval_env = Monitor(SeededDoorKeyEnv(size=args.size, seeds=VAL_SEEDS))
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
         model = PPO(

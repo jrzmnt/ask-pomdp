@@ -33,7 +33,7 @@ from tqdm import tqdm
 from ask.slm.model import load_slm
 from ask.uncertainty.entropy import compute_mc_uncertainties
 from ask.utils.seed import set_seed
-from door_key.env import ACTIONS, DoorKeyEnv, _STR_TO_ACTION
+from door_key.env import ACTIONS, DoorKeyEnv, TEST_SEEDS, VAL_SEEDS, _STR_TO_ACTION
 
 console = Console()
 
@@ -50,8 +50,8 @@ QWEN_MODELS = {
 
 DECODING = {"max_tokens": 10}
 
-N_EVAL_EPISODES = 100
-N_TEST_EPISODES = 100
+N_EVAL_EPISODES = len(VAL_SEEDS)   # 100 — Optuna τ search (seeds 0-99)
+N_TEST_EPISODES = len(TEST_SEEDS)  # 100 — final reported results (seeds 100-199)
 N_MC_SAMPLES = 30
 
 RESULTS_DIR = Path("door_key/results")
@@ -359,7 +359,7 @@ def main() -> None:
         with wandb.init(project=WANDB_PROJECT, name=f"dk_eval_ppo{file_tag}",
                         group=args.wandb_group, job_type="eval_ppo", config=cfg_ppo):
             summary, logs = eval_ppo(args.model_path, args.size, args.n_episodes,
-                                     seed_offset=N_EVAL_EPISODES)
+                                     seed_offset=TEST_SEEDS.start)
             _print_summary_table("PPO results", summary)
             if checkpoint_reward is not None:
                 summary["checkpoint_reward"] = checkpoint_reward
@@ -379,7 +379,7 @@ def main() -> None:
         with wandb.init(project=WANDB_PROJECT, name=f"dk_eval_slm_{tag}{file_tag}",
                         group=args.wandb_group, job_type="eval_slm", config=cfg_slm):
             summary, logs = eval_slm_only(cfg, args.size, args.n_episodes,
-                                          seed_offset=N_EVAL_EPISODES)
+                                          seed_offset=TEST_SEEDS.start)
             _print_summary_table(f"SLM {tag} results", summary)
             if checkpoint_reward is not None:
                 summary["checkpoint_reward"] = checkpoint_reward
@@ -446,7 +446,7 @@ def main() -> None:
         with wandb.init(project=WANDB_PROJECT, name=f"dk_eval_ask_{tag}{file_tag}",
                         group=args.wandb_group, job_type="eval_ask", config=cfg_ask):
             _, logs = eval_ask(_opt_model, _opt_slm, args.size, best_threshold,
-                               args.n_episodes, seed_offset=N_EVAL_EPISODES,
+                               args.n_episodes, seed_offset=TEST_SEEDS.start,
                                n_mc_samples=args.n_mc)
             del _opt_model, _opt_slm
             gc.collect()
