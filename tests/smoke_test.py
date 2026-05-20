@@ -295,3 +295,82 @@ def test_hl_episode_state_history():
     assert len(env._history_cards) == 1
     assert len(env._seen) >= 2
     env.close()
+
+
+# =============================================================================
+# DoorKey prompt enrichment
+# =============================================================================
+
+
+def test_dk_env_agent_pos_abs_and_obs_cell():
+    from door_key.env import DoorKeyEnv
+
+    env = DoorKeyEnv(size=5)
+    env.reset(seed=0)
+    ap = env.agent_pos_abs
+    w, h = env._env.unwrapped.width, env._env.unwrapped.height
+    assert 0 <= ap[0] < w and 0 <= ap[1] < h
+    hits = [(r, c) for r in range(7) for c in range(7) if env.obs_cell_to_world(r, c) == ap]
+    assert len(hits) == 1
+    env.close()
+
+
+def test_dk_prompt_styles():
+    from door_key.env import DoorKeyEnv
+    from door_key.eval import build_prompt, new_episode_state, update_episode_state
+
+    env = DoorKeyEnv(size=5)
+    env.reset(seed=0)
+    basic = build_prompt(env, None, prompt_style="basic")
+    assert "TURN_LEFT" in basic and "PICKUP" in basic and "TOGGLE" in basic
+    assert "CURRENT SUBTASK" in basic
+    assert "ACTION PREVIEW" not in basic
+
+    enriched = build_prompt(env, None, prompt_style="enriched")
+    assert "ACTION PREVIEW" in enriched
+    assert "Adjacent" in enriched
+    assert "Longest clear ray" in enriched
+
+    st = new_episode_state()
+    update_episode_state(st, env, None)
+    s_min = build_prompt(env, st, prompt_style="stateful_min")
+    assert "World position" in s_min
+    assert "Recent actions" in s_min
+
+    s_full = build_prompt(env, st, prompt_style="stateful", prompt_map_radius=3)
+    assert "DISCOVERED MAP" in s_full
+
+    s_rat = build_prompt(env, st, prompt_style="stateful", rationale=True)
+    assert "Reason:" in s_rat
+    assert "Action:" in s_rat
+    env.close()
+
+
+def test_dk_parse_action_rationale():
+    from door_key.eval import parse_action
+
+    assert parse_action("PICKUP") == 3
+    assert parse_action("TOGGLE") == 5
+    assert parse_action("FORWARD") == 2
+    text = "Reason: I should pickup the key soon\nAction: TURN_LEFT"
+    assert parse_action(text, rationale=True) == 0
+    text2 = "Reason: ahead is a wall\nAction: TURN_RIGHT"
+    assert parse_action(text2, rationale=True) == 1
+
+
+def test_dk_episode_state_updates():
+    from door_key.env import DoorKeyEnv
+    from door_key.eval import new_episode_state, update_episode_state
+
+    env = DoorKeyEnv(size=5)
+    env.reset(seed=0)
+    st = new_episode_state()
+    update_episode_state(st, env, None)
+    assert st.last_pos == env.agent_pos_abs
+    assert st.visits[env.agent_pos_abs] >= 1
+    assert len(st.known_grid) > 0
+    for a in (0, 1, 2):
+        env.step(a)
+        update_episode_state(st, env, a)
+    assert len(st.actions) == 3
+    env.close()
