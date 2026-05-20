@@ -42,13 +42,15 @@ for R in "${REWARDS[@]}"; do
 
     for SLM in qwen3.5-2b qwen3.5-4b; do
         echo "  → ASK eval (${SLM})"
-        python eval_ppo_slm.py \
+        CUDA_VISIBLE_DEVICES=4  python eval_ppo_slm.py \
             --mode ask \
             --slm "${SLM}" \
             --model-path "${MODEL}" \
             --tag "${TAG}" \
             --n-optuna-trials 10 \
-            --wandb-group fourrooms_checkpoints
+            --wandb-group fourrooms_checkpoints \
+            --prompt-style stateful \
+            --prompt-rationale
     done
     echo ""
 done

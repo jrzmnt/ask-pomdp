@@ -102,6 +102,18 @@ class DoorKeyEnv(gym.Env):
     # ------------------------------------------------------------------
 
     @property
+    def raw_obs(self) -> Optional[Dict[str, Any]]:
+        return self._last_raw
+
+    @property
+    def step_count(self) -> int:
+        return self._step_count
+
+    @property
+    def max_steps(self) -> int:
+        return self._max_steps
+
+    @property
     def has_key(self) -> bool:
         """True if the agent is currently carrying the key."""
         return self._env.unwrapped.carrying is not None
@@ -115,8 +127,34 @@ class DoorKeyEnv(gym.Env):
         return False
 
     @property
+    def door_locked(self) -> bool:
+        for obj in self._env.unwrapped.grid.grid:
+            if obj is not None and obj.type == "door":
+                return bool(getattr(obj, "is_locked", False))
+        return False
+
+    @property
     def agent_dir(self) -> int:
         return int(self._env.unwrapped.agent_dir)
+
+    @property
+    def agent_pos_abs(self) -> Tuple[int, int]:
+        """Agent position in MiniGrid world coordinates (x, y)."""
+        return tuple(int(v) for v in self._env.unwrapped.agent_pos)
+
+    def obs_cell_to_world(self, img_row: int, img_col: int) -> Tuple[int, int]:
+        """Map ``image[img_row, img_col]`` from the POV tensor to world (x, y).
+
+        Uses the same geometry as MiniGrid's ``get_full_render`` / ``relative_coords``.
+        """
+        uw = self._env.unwrapped
+        f_vec = np.asarray(uw.dir_vec, dtype=int)
+        r_vec = np.asarray(uw.right_vec, dtype=int)
+        ap = np.asarray(uw.agent_pos, dtype=int)
+        sz = int(uw.agent_view_size)
+        top_left = ap + f_vec * (sz - 1) - r_vec * (sz // 2)
+        wxy = top_left - f_vec * int(img_col) + r_vec * int(img_row)
+        return int(wxy[0]), int(wxy[1])
 
     # ------------------------------------------------------------------
     # SLM helpers

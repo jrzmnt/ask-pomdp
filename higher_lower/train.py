@@ -14,6 +14,11 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import os
+import sys
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import torch
 import wandb
 from stable_baselines3 import PPO
@@ -24,6 +29,7 @@ from ask.utils.seed import set_seed
 from ask.utils.ppo import DropoutActorCriticPolicy
 from ask.utils.callbacks import RewardThresholdCheckpointCallback
 from higher_lower.env import HigherLowerEnv
+
 
 # Reward thresholds for checkpointing.
 # HigherLower PPO typically reaches ~0.49 at convergence;

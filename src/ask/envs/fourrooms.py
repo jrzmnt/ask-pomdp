@@ -21,6 +21,7 @@ OBJECT_TO_CHAR = {
 
 DIR_TO_STR = {0: "EAST", 1: "SOUTH", 2: "WEST", 3: "NORTH"}
 
+
 # MiniGrid actions used for navigation
 ACTION_TURN_LEFT = 0
 ACTION_TURN_RIGHT = 1
@@ -81,6 +82,25 @@ class FourRoomsEnv(gym.Env):
     @property
     def agent_dir(self) -> int:
         return int(self._env.unwrapped.agent_dir)
+
+    @property
+    def agent_pos_abs(self) -> tuple[int, int]:
+        """Agent position in MiniGrid world coordinates (x, y)."""
+        return tuple(int(v) for v in self._env.unwrapped.agent_pos)
+
+    def obs_cell_to_world(self, img_row: int, img_col: int) -> tuple[int, int]:
+        """Map ``image[img_row, img_col]`` from the POV tensor to world (x, y).
+
+        Uses the same geometry as MiniGrid's ``get_full_render`` / ``relative_coords``.
+        """
+        uw = self._env.unwrapped
+        f_vec = np.asarray(uw.dir_vec, dtype=int)
+        r_vec = np.asarray(uw.right_vec, dtype=int)
+        ap = np.asarray(uw.agent_pos, dtype=int)
+        sz = int(uw.agent_view_size)
+        top_left = ap + f_vec * (sz - 1) - r_vec * (sz // 2)
+        wxy = top_left - f_vec * int(img_col) + r_vec * int(img_row)
+        return int(wxy[0]), int(wxy[1])
 
     def render_view_ascii(self) -> str:
         """Return the current 7×7 egocentric view as an ASCII string."""

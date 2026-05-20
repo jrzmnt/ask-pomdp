@@ -100,6 +100,15 @@ def test_env_agent_dir():
     env.close()
 
 
+def test_env_agent_pos_abs():
+    env = FourRoomsEnv()
+    env.reset(seed=0)
+    x, y = env.agent_pos_abs
+    w, h = env._env.unwrapped.width, env._env.unwrapped.height
+    assert 0 <= x < w and 0 <= y < h
+    env.close()
+
+
 # =============================================================================
 # PPO + uncertainty
 # =============================================================================
@@ -199,13 +208,19 @@ def test_eval_ask_never_ask(tiny_model, mock_slm):
 
 
 def test_prompt_build():
-    from eval_ppo_slm import build_prompt
+    from eval_ppo_slm import build_prompt, new_episode_state, update_episode_state
     env = FourRoomsEnv()
     env.reset(seed=0)
-    prompt = build_prompt(env, ppo_action=2)
+    prompt = build_prompt(env, None, ppo_action=2, prompt_style="basic")
     assert "FORWARD" in prompt
     assert "TURN_LEFT" in prompt
     assert "TURN_RIGHT" in prompt
+    p2 = build_prompt(env, None, None, prompt_style="enriched")
+    assert "ACTION PREVIEW" in p2
+    st = new_episode_state()
+    update_episode_state(st, env, None)
+    p3 = build_prompt(env, st, None, prompt_style="stateful_min")
+    assert "World position" in p3
     env.close()
 
 
@@ -217,3 +232,145 @@ def test_parse_action():
     assert parse_action("  forward  ") == 2
     assert parse_action("nonsense") is None
     assert parse_action("") is None
+
+
+def test_parse_action_rationale_prefers_action_line():
+    from eval_ppo_slm import parse_action
+    text = "Reason: I want to go left first\nAction: TURN_RIGHT"
+    assert parse_action(text, rationale=True) == 1
+    text2 = "Reason: mention TURN_LEFT in text\nAction: FORWARD"
+    assert parse_action(text2, rationale=True) == 2
+
+
+# =============================================================================
+# HigherLower prompt enrichment
+# =============================================================================
+
+
+def test_hl_prompt_styles():
+    from higher_lower.env import HigherLowerEnv
+
+    env = HigherLowerEnv()
+    env.reset(seed=0)
+    basic = env.build_prompt(prompt_style="basic")
+    assert "HIGHER" in basic and "LOWER" in basic
+    assert "Cards remaining strictly higher" in basic
+    assert "Recommended" not in basic
+
+    enriched = env.build_prompt(prompt_style="enriched")
+    assert "Recommended" in enriched
+    assert "P(next strictly higher" in enriched
+
+    env.reset(seed=1)
+    for _ in range(3):
+        _, _, term, trunc, _ = env.step(0)
+        if term or trunc:
+            break
+    stateful = env.build_prompt(prompt_style="stateful", prompt_history=4)
+    assert "Recent decisions" in stateful
+    assert "Win streak" in stateful
+    env.close()
+
+
+def test_hl_parse_action_rationale():
+    from higher_lower.eval import parse_action
+
+    assert (
+        parse_action("Reason: HIGHER looks tempting\nAction: LOWER", rationale=True) == 1
+    )
+    assert parse_action("LOWER", rationale=True) == 1
+    assert parse_action("Reason: x\nAction: HIGHER", rationale=True) == 0
+
+
+def test_hl_episode_state_history():
+    from higher_lower.env import HigherLowerEnv
+
+    env = HigherLowerEnv()
+    env.reset(seed=0)
+    assert len(env._actions) == 0
+    assert len(env._outcomes) == 0
+    env.step(0)
+    assert len(env._actions) == 1
+    assert len(env._outcomes) == 1
+    assert len(env._history_cards) == 1
+    assert len(env._seen) >= 2
+    env.close()
+
+
+# =============================================================================
+# DoorKey prompt enrichment
+# =============================================================================
+
+
+def test_dk_env_agent_pos_abs_and_obs_cell():
+    from door_key.env import DoorKeyEnv
+
+    env = DoorKeyEnv(size=5)
+    env.reset(seed=0)
+    ap = env.agent_pos_abs
+    w, h = env._env.unwrapped.width, env._env.unwrapped.height
+    assert 0 <= ap[0] < w and 0 <= ap[1] < h
+    hits = [(r, c) for r in range(7) for c in range(7) if env.obs_cell_to_world(r, c) == ap]
+    assert len(hits) == 1
+    env.close()
+
+
+def test_dk_prompt_styles():
+    from door_key.env import DoorKeyEnv
+    from door_key.eval import build_prompt, new_episode_state, update_episode_state
+
+    env = DoorKeyEnv(size=5)
+    env.reset(seed=0)
+    basic = build_prompt(env, None, prompt_style="basic")
+    assert "TURN_LEFT" in basic and "PICKUP" in basic and "TOGGLE" in basic
+    assert "CURRENT SUBTASK" in basic
+    assert "ACTION PREVIEW" not in basic
+
+    enriched = build_prompt(env, None, prompt_style="enriched")
+    assert "ACTION PREVIEW" in enriched
+    assert "Adjacent" in enriched
+    assert "Longest clear ray" in enriched
+
+    st = new_episode_state()
+    update_episode_state(st, env, None)
+    s_min = build_prompt(env, st, prompt_style="stateful_min")
+    assert "World position" in s_min
+    assert "Recent actions" in s_min
+
+    s_full = build_prompt(env, st, prompt_style="stateful", prompt_map_radius=3)
+    assert "DISCOVERED MAP" in s_full
+
+    s_rat = build_prompt(env, st, prompt_style="stateful", rationale=True)
+    assert "Reason:" in s_rat
+    assert "Action:" in s_rat
+    env.close()
+
+
+def test_dk_parse_action_rationale():
+    from door_key.eval import parse_action
+
+    assert parse_action("PICKUP") == 3
+    assert parse_action("TOGGLE") == 5
+    assert parse_action("FORWARD") == 2
+    text = "Reason: I should pickup the key soon\nAction: TURN_LEFT"
+    assert parse_action(text, rationale=True) == 0
+    text2 = "Reason: ahead is a wall\nAction: TURN_RIGHT"
+    assert parse_action(text2, rationale=True) == 1
+
+
+def test_dk_episode_state_updates():
+    from door_key.env import DoorKeyEnv
+    from door_key.eval import new_episode_state, update_episode_state
+
+    env = DoorKeyEnv(size=5)
+    env.reset(seed=0)
+    st = new_episode_state()
+    update_episode_state(st, env, None)
+    assert st.last_pos == env.agent_pos_abs
+    assert st.visits[env.agent_pos_abs] >= 1
+    assert len(st.known_grid) > 0
+    for a in (0, 1, 2):
+        env.step(a)
+        update_episode_state(st, env, a)
+    assert len(st.actions) == 3
+    env.close()

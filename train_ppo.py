@@ -27,6 +27,14 @@ from ask.utils.seed import set_seed
 CHECKPOINT_THRESHOLDS = [0.1, 0.3, 0.5, 0.7]
 
 
+#check cuda availability
+if not torch.cuda.is_available():
+    #torch version
+    print(torch.__version__)
+    print("CUDA is not available")
+    exit(1)
+
+
 def load_config(path: str) -> dict:
     with open(path) as f:
         return yaml.safe_load(f)

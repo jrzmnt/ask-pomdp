@@ -16,6 +16,20 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+if [ -f ".env" ]; then
+    source .env
+fi
+
+if [ -z "${WANDB_API_KEY:-}" ]; then
+    echo "WANDB_API_KEY is not set"
+    exit 1
+fi
+
+if [ -z "${HF_TOKEN:-}" ]; then
+    echo "HF_TOKEN is not set"
+    exit 1
+fi
+
 # ── Logging ───────────────────────────────────────────────────────────────────
 LOG_DIR="logs"
 mkdir -p "$LOG_DIR"
@@ -48,7 +62,7 @@ fi
 # ── Install dependencies ───────────────────────────────────────────────────────
 if [ "${SKIP_INSTALL:-0}" != "1" ]; then
     log "Installing dependencies..."
-    pip install -e ".[dev]" --quiet
+    #pip install -e ".[dev]" --quiet
     pip install popgym --quiet
 fi
 

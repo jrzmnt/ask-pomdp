@@ -6,9 +6,15 @@ Usage:
   python higher_lower/eval.py --mode slm  --slm 1.5b
   python higher_lower/eval.py --mode ask  --slm 1.5b
   python higher_lower/eval.py --mode ask  --slm 1.5b --threshold 0.8
+  python higher_lower/eval.py --mode slm --slm qwen3.5-2b --prompt-style stateful --prompt-rationale
 """
 
 from __future__ import annotations
+
+import os
+import sys
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import argparse
 import csv
@@ -33,7 +39,7 @@ from tqdm import tqdm
 from ask.slm.model import load_slm
 from ask.uncertainty.entropy import compute_mc_uncertainties
 from ask.utils.seed import set_seed
-from higher_lower.env import ACTIONS_STR, HigherLowerEnv, _STR_TO_ACTION
+from higher_lower.env import HigherLowerEnv
 
 console = Console()
 
@@ -49,6 +55,7 @@ QWEN_MODELS = {
 }
 
 DECODING = {"max_tokens": 10}
+DECODING_RATIONALE_MAX_TOKENS = 32
 
 N_EVAL_EPISODES = 100
 N_TEST_EPISODES = 100
@@ -56,6 +63,21 @@ N_MC_SAMPLES = 30
 
 RESULTS_DIR = Path("higher_lower/results")
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
+# Match longer tokens first when scanning (substring match)
+_PARSE_ACTION_ORDER = [
+    ("HIGHER", 0),
+    ("LOWER", 1),
+    ("HIGH", 0),
+    ("LOW", 1),
+]
+
+
+def decoding_for(rationale: bool) -> Dict[str, Any]:
+    d = dict(DECODING)
+    if rationale:
+        d["max_tokens"] = DECODING_RATIONALE_MAX_TOKENS
+    return d
 
 
 # =============================================================================
@@ -88,10 +110,19 @@ def slm_cfg_for(model_name: str) -> Dict[str, Any]:
     }
 
 
-def parse_action(text: str) -> Optional[int]:
-    text = text.strip().upper()
-    for key, val in _STR_TO_ACTION.items():
-        if key in text:
+def parse_action(text: str, *, rationale: bool = False) -> Optional[int]:
+    t = text.strip()
+    if rationale:
+        for line in t.splitlines():
+            s = line.strip()
+            if s.upper().startswith("ACTION:"):
+                tail = s.split(":", 1)[-1].strip().upper()
+                for key, val in _PARSE_ACTION_ORDER:
+                    if key in tail:
+                        return val
+    u = t.upper()
+    for key, val in _PARSE_ACTION_ORDER:
+        if key in u:
             return val
     return None
 
@@ -218,10 +249,19 @@ def eval_ppo(model_path: str, n_episodes: int, seed_offset: int = 0):
 # SLM-only eval
 # =============================================================================
 
-def eval_slm_only(slm_cfg: Dict, n_episodes: int, seed_offset: int = 0):
+def eval_slm_only(
+    slm_cfg: Dict,
+    n_episodes: int,
+    seed_offset: int = 0,
+    *,
+    prompt_style: str = "basic",
+    prompt_rationale: bool = False,
+    prompt_history: int = 8,
+):
     env = HigherLowerEnv()
     slm = load_slm(slm_cfg)
     tag = short_model_name(slm_cfg["model"])
+    decode = decoding_for(prompt_rationale)
 
     logs = []
     for ep in tqdm(range(n_episodes), desc=f"SLM {tag}", unit="ep", leave=False):
@@ -229,9 +269,14 @@ def eval_slm_only(slm_cfg: Dict, n_episodes: int, seed_offset: int = 0):
         done, total_reward, correct, total_steps, invalid = False, 0.0, 0, 0, 0
         t0 = time.time()
         while not done:
-            prompt = env.build_prompt()
-            output = slm.generate(prompt, DECODING)
-            action = parse_action(output.text)
+            prompt = env.build_prompt(
+                None,
+                prompt_style=prompt_style,
+                rationale=prompt_rationale,
+                prompt_history=prompt_history,
+            )
+            output = slm.generate(prompt, decode)
+            action = parse_action(output.text, rationale=prompt_rationale)
             if action is None:
                 invalid += 1
                 action = 0  # fallback: HIGHER
@@ -256,17 +301,36 @@ def eval_slm_only(slm_cfg: Dict, n_episodes: int, seed_offset: int = 0):
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-    return _summarize(logs, {"slm_model": slm_cfg["model"]}), logs
+    return _summarize(
+        logs,
+        {
+            "slm_model": slm_cfg["model"],
+            "prompt_style": prompt_style,
+            "prompt_rationale": prompt_rationale,
+            "prompt_history": prompt_history,
+        },
+    ), logs
 
 
 # =============================================================================
 # ASK eval
 # =============================================================================
 
-def eval_ask(model: PPO, slm, threshold: float, n_episodes: int,
-             seed_offset: int = 0, n_mc_samples: int = N_MC_SAMPLES):
+def eval_ask(
+    model: PPO,
+    slm,
+    threshold: float,
+    n_episodes: int,
+    seed_offset: int = 0,
+    n_mc_samples: int = N_MC_SAMPLES,
+    *,
+    prompt_style: str = "basic",
+    prompt_rationale: bool = False,
+    prompt_history: int = 8,
+):
     env = HigherLowerEnv()
     logs = []
+    decode = decoding_for(prompt_rationale)
 
     for ep in tqdm(range(n_episodes), desc=f"ASK τ={threshold:.2f}", unit="ep", leave=False):
         obs, _ = env.reset(seed=seed_offset + ep)
@@ -282,9 +346,14 @@ def eval_ask(model: PPO, slm, threshold: float, n_episodes: int,
 
             if total_unc >= threshold:
                 slm_called += 1
-                prompt = env.build_prompt(ppo_action)
-                output = slm.generate(prompt, DECODING)
-                slm_action = parse_action(output.text)
+                prompt = env.build_prompt(
+                    ppo_action,
+                    prompt_style=prompt_style,
+                    rationale=prompt_rationale,
+                    prompt_history=prompt_history,
+                )
+                output = slm.generate(prompt, decode)
+                slm_action = parse_action(output.text, rationale=prompt_rationale)
                 if slm_action is not None:
                     slm_valid += 1
                     if slm_action != ppo_action:
@@ -316,10 +385,29 @@ def eval_ask(model: PPO, slm, threshold: float, n_episodes: int,
     return float(np.mean([l["reward"] for l in logs])), logs
 
 
-def objective(trial, model, slm, n_eval_episodes, n_mc_samples):
+def objective(
+    trial,
+    model,
+    slm,
+    n_eval_episodes,
+    n_mc_samples,
+    *,
+    prompt_style: str,
+    prompt_rationale: bool,
+    prompt_history: int,
+):
     threshold = trial.suggest_float("threshold", 0.01, 1.5)
-    mean_reward, _ = eval_ask(model, slm, threshold, n_eval_episodes, seed_offset=0,
-                               n_mc_samples=n_mc_samples)
+    mean_reward, _ = eval_ask(
+        model,
+        slm,
+        threshold,
+        n_eval_episodes,
+        seed_offset=0,
+        n_mc_samples=n_mc_samples,
+        prompt_style=prompt_style,
+        prompt_rationale=prompt_rationale,
+        prompt_history=prompt_history,
+    )
     return mean_reward
 
 
@@ -339,6 +427,26 @@ def parse_args():
     p.add_argument("--model-path", type=str, default="runs/higher_lower/model", dest="model_path")
     p.add_argument("--tag", type=str, default="")
     p.add_argument("--wandb-group", type=str, default="higherlower", dest="wandb_group")
+    p.add_argument(
+        "--prompt-style",
+        choices=["basic", "enriched", "stateful"],
+        default="basic",
+        dest="prompt_style",
+        help="SLM prompt: basic (legacy), enriched (+probabilities), stateful (+episode memory)",
+    )
+    p.add_argument(
+        "--prompt-rationale",
+        action="store_true",
+        dest="prompt_rationale",
+        help="Allow Reason: line before Action: (increases max_new_tokens)",
+    )
+    p.add_argument(
+        "--prompt-history",
+        type=int,
+        default=8,
+        dest="prompt_history",
+        help="Recent decisions shown in stateful prompts",
+    )
     return p.parse_args()
 
 
@@ -377,12 +485,26 @@ def main() -> None:
         tag = short_model_name(model_name)
         cfg = slm_cfg_for(model_name)
         console.rule(f"[bold cyan]SLM-only — {tag} — HigherLower[/bold cyan]")
-        cfg_slm = {"env": "HigherLowerEasy", "slm_model": model_name, "n_episodes": args.n_episodes}
+        cfg_slm = {
+            "env": "HigherLowerEasy",
+            "slm_model": model_name,
+            "n_episodes": args.n_episodes,
+            "prompt_style": args.prompt_style,
+            "prompt_rationale": args.prompt_rationale,
+            "prompt_history": args.prompt_history,
+        }
         if checkpoint_reward is not None:
             cfg_slm["checkpoint_reward"] = checkpoint_reward
         with wandb.init(project=WANDB_PROJECT, name=f"hl_eval_slm_{tag}{file_tag}",
                         group=args.wandb_group, job_type="eval_slm", config=cfg_slm):
-            summary, logs = eval_slm_only(cfg, args.n_episodes, seed_offset=N_EVAL_EPISODES)
+            summary, logs = eval_slm_only(
+                cfg,
+                args.n_episodes,
+                seed_offset=N_EVAL_EPISODES,
+                prompt_style=args.prompt_style,
+                prompt_rationale=args.prompt_rationale,
+                prompt_history=args.prompt_history,
+            )
             _print_summary_table(f"SLM {tag} results", summary)
             if checkpoint_reward is not None:
                 summary["checkpoint_reward"] = checkpoint_reward
@@ -399,6 +521,8 @@ def main() -> None:
         if args.threshold is not None:
             best_threshold = args.threshold
             console.rule(f"[bold cyan]ASK — {tag} τ={best_threshold:.4f} (fixed)[/bold cyan]")
+            _opt_model = PPO.load(args.model_path, device="cuda" if torch.cuda.is_available() else "cpu")
+            _opt_slm = load_slm(cfg)
         else:
             console.rule(f"[bold cyan]ASK — {tag} Optuna ({args.n_optuna_trials} trials)[/bold cyan]")
             study_name = f"hl_ask_{tag}{file_tag}"
@@ -408,7 +532,16 @@ def main() -> None:
             _opt_model = PPO.load(args.model_path, device="cuda" if torch.cuda.is_available() else "cpu")
             _opt_slm = load_slm(cfg)
             study.optimize(
-                lambda t: objective(t, _opt_model, _opt_slm, args.n_eval_episodes, args.n_mc),
+                lambda t: objective(
+                    t,
+                    _opt_model,
+                    _opt_slm,
+                    args.n_eval_episodes,
+                    args.n_mc,
+                    prompt_style=args.prompt_style,
+                    prompt_rationale=args.prompt_rationale,
+                    prompt_history=args.prompt_history,
+                ),
                 n_trials=args.n_optuna_trials, show_progress_bar=True,
             )
             best_threshold = study.best_params["threshold"]
@@ -430,30 +563,44 @@ def main() -> None:
                 "env":             "HigherLowerEasy",
                 "saved_at":        datetime.now().isoformat(),
             })
-        else:
-            # Fixed threshold path: load fresh
-            _opt_model = PPO.load(args.model_path, device="cuda" if torch.cuda.is_available() else "cpu")
-            _opt_slm = load_slm(cfg)
 
         cfg_ask = {
-            "env": "HigherLowerEasy", "slm_model": model_name,
-            "threshold": best_threshold, "n_mc_samples": args.n_mc,
+            "env": "HigherLowerEasy",
+            "slm_model": model_name,
+            "threshold": best_threshold,
+            "n_mc_samples": args.n_mc,
             "n_episodes": args.n_episodes,
+            "prompt_style": args.prompt_style,
+            "prompt_rationale": args.prompt_rationale,
+            "prompt_history": args.prompt_history,
         }
         if checkpoint_reward is not None:
             cfg_ask["checkpoint_reward"] = checkpoint_reward
         with wandb.init(project=WANDB_PROJECT, name=f"hl_eval_ask_{tag}{file_tag}",
                         group=args.wandb_group, job_type="eval_ask", config=cfg_ask):
-            _, logs = eval_ask(_opt_model, _opt_slm, best_threshold, args.n_episodes,
-                               seed_offset=N_EVAL_EPISODES, n_mc_samples=args.n_mc)
+            _, logs = eval_ask(
+                _opt_model,
+                _opt_slm,
+                best_threshold,
+                args.n_episodes,
+                seed_offset=N_EVAL_EPISODES,
+                n_mc_samples=args.n_mc,
+                prompt_style=args.prompt_style,
+                prompt_rationale=args.prompt_rationale,
+                prompt_history=args.prompt_history,
+            )
             del _opt_model, _opt_slm
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
             summary = _summarize(logs, {
-                "slm_model": model_name, "threshold": best_threshold,
+                "slm_model": model_name,
+                "threshold": best_threshold,
                 "n_mc_samples": args.n_mc,
+                "prompt_style": args.prompt_style,
+                "prompt_rationale": args.prompt_rationale,
+                "prompt_history": args.prompt_history,
                 "IR_mean": float(np.mean([l["IR"] for l in logs])),
                 "OR_mean": float(np.mean([l["OR"] for l in logs])),
                 "slm_valid_rate": float(np.mean([l["slm_valid_rate"] for l in logs])),
