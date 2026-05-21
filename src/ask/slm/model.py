@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import logging
+import random as _random
 from dataclasses import dataclass
-from typing import Any, Dict
+from typing import Any, Dict, Iterable, List, Optional
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -15,6 +16,31 @@ class SLMOutput:
     text: str
     logits: torch.Tensor
     cost: float
+
+
+class RandomSLM:
+    """Drop-in SLM replacement that returns a uniformly sampled action token.
+
+    Used as a "dice" baseline for ASK: it isolates the value of the language
+    model's actual decisions from the value of the uncertainty gate. When
+    ``generate`` is called, the prompt is ignored and a token from
+    ``action_tokens`` is returned, so the rest of the ASK pipeline (MC dropout
+    gate, Optuna τ search, IR/OR/valid-rate accounting) is unchanged.
+    """
+
+    def __init__(self, action_tokens: Iterable[str], seed: Optional[int] = 42):
+        self._actions: List[str] = list(action_tokens)
+        if not self._actions:
+            raise ValueError("RandomSLM requires a non-empty action_tokens list")
+        self._rng = _random.Random(seed)
+
+    @property
+    def actions(self) -> List[str]:
+        return list(self._actions)
+
+    def generate(self, prompt: str, decoding: Optional[Dict[str, Any]] = None) -> SLMOutput:
+        text = self._rng.choice(self._actions)
+        return SLMOutput(text=text, logits=torch.empty(0), cost=0.0)
 
 
 def _is_qwen3x(model_name: str) -> bool:
@@ -88,12 +114,25 @@ class HuggingFaceSLM:
         return SLMOutput(text=text, logits=torch.empty(0), cost=float(new_ids.numel()))
 
 
-def load_slm(cfg: Dict[str, Any]) -> HuggingFaceSLM:
-    if cfg.get("provider", "hf") != "hf":
-        raise ValueError(f"Unsupported provider: {cfg['provider']}")
-    return HuggingFaceSLM(
-        model_name=cfg["model"],
-        device=cfg.get("device", "auto"),
-        dtype=cfg.get("dtype", "float16"),
-        thinking=cfg.get("thinking", False),
-    )
+def load_slm(cfg: Dict[str, Any]):
+    """Build an SLM instance from a config dict.
+
+    Supported providers:
+      - ``"hf"`` (default) — local HuggingFace causal-LM via ``HuggingFaceSLM``.
+      - ``"random"`` — ``RandomSLM`` baseline; expects ``actions`` (list of
+        valid action tokens) in ``cfg`` and an optional ``seed``.
+    """
+    provider = cfg.get("provider", "hf")
+    if provider == "hf":
+        return HuggingFaceSLM(
+            model_name=cfg["model"],
+            device=cfg.get("device", "auto"),
+            dtype=cfg.get("dtype", "float16"),
+            thinking=cfg.get("thinking", False),
+        )
+    if provider == "random":
+        actions = cfg.get("actions")
+        if not actions:
+            raise ValueError("provider='random' requires cfg['actions']")
+        return RandomSLM(actions, seed=cfg.get("seed", 42))
+    raise ValueError(f"Unsupported provider: {provider}")

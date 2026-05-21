@@ -691,6 +691,8 @@ def set_torch_seed(seed: int) -> None:
 
 
 def short_model_name(model_name: str) -> str:
+    if model_name == "random":
+        return "random"
     name = model_name.lower().replace("/", "-").replace("_", "-").replace(".", "")
     for pattern, tag in [
         ("qwen35-4b",  "qwen35_4b"),
@@ -717,6 +719,13 @@ def resolve_model_path(override: str | None) -> str:
 
 
 def slm_cfg_for(model_name: str) -> Dict[str, Any]:
+    if model_name == "random":
+        return {
+            "provider": "random",
+            "model": "random",
+            "actions": list(ACTIONS_STR),
+            "seed": 42,
+        }
     return {
         "provider": "hf",
         "model": model_name,
@@ -1074,7 +1083,12 @@ def wandb_log_optuna_trials(run, study: "optuna.Study") -> None:
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Evaluate PPO / SLM / ASK on MiniGrid-FourRooms")
     p.add_argument("--mode", choices=["ppo", "slm", "ask", "all"], default="all")
-    p.add_argument("--slm", choices=list(QWEN_MODELS.keys()) + ["all"], default="all")
+    p.add_argument(
+        "--slm",
+        choices=list(QWEN_MODELS.keys()) + ["all", "random"],
+        default="all",
+        help='Qwen tag, "all" (both Qwen3.5-2B and -4B), or "random" (dice baseline)',
+    )
     p.add_argument("--threshold", type=float, default=None,
                    help="Fixed τ — skips Optuna")
     p.add_argument("--n-mc", type=int, default=N_MC_SAMPLES, dest="n_mc")
@@ -1118,6 +1132,8 @@ def main() -> None:
     model_path = resolve_model_path(args.model_path)
     file_tag = f"_{args.tag}" if args.tag else ""
     slm_keys = ["qwen3.5-2b", "qwen3.5-4b"] if args.slm == "all" else [args.slm]
+    # Map CLI keys to logging model names; "random" is a dice baseline.
+    QWEN_MODELS_EXT = {**QWEN_MODELS, "random": "random"}
 
     # Extract checkpoint reward from tag (e.g. "ckpt_r030" → 0.30)
     checkpoint_reward = None
@@ -1161,7 +1177,7 @@ def main() -> None:
     # Per-model: SLM-only and/or ASK
     # -------------------------------------------------------------------------
     for key in slm_keys:
-        model_name = QWEN_MODELS[key]
+        model_name = QWEN_MODELS_EXT[key]
         tag = short_model_name(model_name)
         cfg = slm_cfg_for(model_name)
 
