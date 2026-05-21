@@ -100,13 +100,53 @@ Results are saved with the `random` tag (`{results,higher_lower/results,door_key
 | stateful | yes | 0.269 | 0.32 | 368.4 |
 | stateful + rationale *(100 ep)* | yes | **0.303** | **0.34** | **350.5** |
 
-### Prompt ablation — HigherLower
+### Prompt ablation — ASK (fixed τ, full PPO, 100 ep)
 
-No tagged ablation JSONs yet; production SLM/ASK use **stateful + rationale** (100 ep): SLM-2B 0.513 reward / 0.732 acc., SLM-4B 0.525 / 0.738. Run `bash scripts/run_hl_prompt_ablation.sh` for `basic` / `enriched` / `stateful` sweeps.
+Effect of the SLM prompt on **ASK** at the Optuna-tuned τ for each (env, model). `basic` uses the minimal prompt (no per-episode memory, no rationale); `stateful + rationale` is the production prompt (per-episode `EpisodeState`, BFS hint, visit history, optional chain-of-thought). Results from `*/results/ask_*_results_prompt_{basic,stateful_rat}.json` produced by `scripts/ablation_prompt_ask_all.sh` (12 jobs, 8 GPUs).
 
-### Prompt ablation — DoorKey
+**FourRooms** — biggest gain from the full prompt (loops + partial-observability reward exploration).
 
-No tagged ablation JSONs yet; the SLM-only numbers above use the default `basic` prompt (2B fails; 4B at 0.582). Run `SIZE=8 bash scripts/run_dk_prompt_ablation.sh` for the full `basic` / `enriched` / `stateful_min` / `stateful` / `stateful + rationale` matrix on Qwen3.5-2B.
+| Model | Prompt | Reward ↑ | Success ↑ | Ep. Length ↓ | IR | OR |
+|-------|--------|:--------:|:---------:|:------------:|:--:|:--:|
+| Qwen3.5-2B | basic | 0.513 | 0.54 | 245.1 | 0.32 | 0.00 |
+| Qwen3.5-2B | stateful + rationale | **0.640** | **0.70** | **183.1** | 0.20 | 0.02 |
+| Qwen3.5-4B | basic | 0.523 | 0.55 | 240.0 | 0.32 | 0.00 |
+| Qwen3.5-4B | stateful + rationale | **0.621** | **0.69** | **193.3** | 0.25 | 0.02 |
+
+**HigherLower** — the 2-action card game leaves little room for prompt structure to help; the full prompt nudges reward by +0.020–0.025 and shifts a few queries into overrides (OR 0.00 → 0.05).
+
+| Model | Prompt | Reward ↑ | Accuracy ↑ | IR | OR |
+|-------|--------|:--------:|:----------:|:--:|:--:|
+| Qwen3.5-2B | basic | 0.501 | 0.726 | 0.69 | 0.00 |
+| Qwen3.5-2B | stateful + rationale | **0.521** | **0.736** | 0.69 | 0.06 |
+| Qwen3.5-4B | basic | 0.495 | 0.723 | 0.60 | 0.00 |
+| Qwen3.5-4B | stateful + rationale | **0.520** | **0.736** | 0.60 | 0.05 |
+
+**DoorKey-8x8** — gain concentrates on the 2B SLM; the 4B model already handles the subtask chain from minimal context.
+
+| Model | Prompt | Reward ↑ | Success ↑ | IR | OR |
+|-------|--------|:--------:|:---------:|:--:|:--:|
+| Qwen3.5-2B | basic | 0.869 | 0.89 | 0.06 | 0.01 |
+| Qwen3.5-2B | stateful + rationale | **0.908** | **0.93** | 0.02 | 0.01 |
+| Qwen3.5-4B | basic | 0.894 | 0.92 | 0.05 | 0.00 |
+| Qwen3.5-4B | stateful + rationale | 0.896 | 0.92 | 0.03 | 0.02 |
+
+**Takeaway:** the full prompt is most impactful in the navigation environment with the smallest SLM (FR-2B, +0.127 reward / +0.16 success), useful but moderate in HigherLower, and concentrated on the 2B model in DoorKey. The IR drops slightly under the full prompt in FourRooms and DoorKey: better SLM answers lead the gate to "trust" the SLM with fewer follow-up queries.
+
+### Sensitivity to MC Dropout samples (N) — ASK, fixed τ, 100 ep
+
+ASK reward, success/accuracy, and IR at the Optuna-tuned τ as the number of MC-Dropout forward passes used to estimate PPO's uncertainty varies (`scripts/ablation_mc_samples_all.sh`).
+
+| Env | Model | N=5 | N=10 | N=20 | N=30 | N=50 |
+|-----|-------|:----:|:-----:|:-----:|:-----:|:-----:|
+| FourRooms | Qwen3.5-2B | 0.513 / 0.54 / 0.31 | 0.513 / 0.54 / 0.32 | 0.513 / 0.54 / 0.32 | 0.513 / 0.54 / 0.32 | 0.513 / 0.54 / 0.32 |
+| FourRooms | Qwen3.5-4B | 0.523 / 0.55 / 0.31 | 0.523 / 0.55 / 0.32 | 0.523 / 0.55 / 0.32 | 0.523 / 0.55 / 0.32 | 0.523 / 0.55 / 0.32 |
+| HigherLower | Qwen3.5-2B | 0.501 / 0.726 / 0.67 | 0.501 / 0.726 / 0.68 | 0.501 / 0.726 / 0.69 | 0.501 / 0.726 / 0.69 | 0.501 / 0.726 / 0.69 |
+| HigherLower | Qwen3.5-4B | 0.495 / 0.723 / 0.60 | 0.495 / 0.723 / 0.60 | 0.495 / 0.723 / 0.59 | 0.495 / 0.723 / 0.60 | 0.495 / 0.723 / 0.60 |
+| DoorKey-8x8 | Qwen3.5-2B | 0.869 / 0.89 / 0.05 | 0.869 / 0.89 / 0.06 | 0.869 / 0.89 / 0.06 | 0.869 / 0.89 / 0.06 | 0.869 / 0.89 / 0.06 |
+| DoorKey-8x8 | Qwen3.5-4B | 0.902 / 0.93 / 0.04 | 0.894 / 0.92 / 0.04 | 0.894 / 0.92 / 0.04 | 0.894 / 0.92 / 0.05 | 0.894 / 0.92 / 0.04 |
+
+Each cell is `Reward / Success-or-Accuracy / IR`. Reward and IR are essentially flat across `N ∈ {5, 10, 20, 30, 50}` for every (env, model) pair: the MC-dropout uncertainty estimator is well-calibrated at very small `N`, so the gating decisions — and therefore downstream behavior — stop moving once `N ≥ 5`. Practically this means ASK runs ≈10× faster at `N=5` than at the default `N=50` with no measurable loss.
 
 ### PPO optimality ablation (checkpoint training target)
 
@@ -133,9 +173,9 @@ No tagged ablation JSONs yet; the SLM-only numbers above use the default `basic`
 | Ckpt target | PPO Reward | Success | ASK-2B Reward | Success | IR-2B | ASK-4B Reward | Success | IR-4B |
 |:-----------:|:----------:|:-------:|:-------------:|:-------:|:-----:|:-------------:|:-------:|:-----:|
 | 0.3 | 0.292 | 0.30 | _running_ | _running_ | — | _running_ | _running_ | — |
-| 0.5 | 0.651 | 0.67 | _running_ | _running_ | — | _running_ | _running_ | — |
+| 0.5 | 0.651 | 0.67 | 0.760 | 0.80 | 0.30 | _running_ | _running_ | — |
 | 0.7 | 0.720 | 0.74 | 0.777 | 0.80 | 0.13 | _running_ | _running_ | — |
-| Full | 0.869 | 0.89 | **0.907** | **0.93** | 0.03 | 0.905 | 0.93 | 0.03 |
+| Full | 0.869 | 0.89 | **0.908** | **0.93** | 0.02 | 0.896 | 0.92 | 0.03 |
 
 ---
 
@@ -168,7 +208,31 @@ SIZE=8 bash scripts/run_dk_prompt_ablation.sh                     # prompt ablat
 
 # Dice baseline (uniform-random SLM): SLM-only + ASK for all three envs
 bash scripts/run_dice_baseline.sh
+
+# Ablations across all three envs, 8-way parallel (one job per GPU)
+GPUS="0,1,2,3,4,5,6,7" bash scripts/ablation_threshold_all.sh    # Fig 1 (τ sweep)
+GPUS="0,1,2,3,4,5,6,7" bash scripts/ablation_mc_samples_all.sh   # Fig 2 (N_MC sweep)
+GPUS="0,1,2,3,4,5,6,7" bash scripts/ablation_prompt_ask_all.sh   # ASK prompt ablation (basic vs full)
 ```
+
+## Figures
+
+Paper figures are produced by [`plots/make_figures.py`](plots/make_figures.py) from the JSON / CSV summaries in `results/`, `higher_lower/results/`, `door_key/results/`, and the per-trial Optuna data in `optuna.db`. Outputs land in `plots/figures/` as PDF + PNG (one panel per environment).
+
+```bash
+python plots/make_figures.py all          # fig1, fig2, fig3
+python plots/make_figures.py fig1         # τ sensitivity (uses optuna.db)
+python plots/make_figures.py fig2         # N_MC sensitivity (needs ablation_mc_samples_all.sh)
+python plots/make_figures.py fig3         # PPO-quality sweep (uses ckpt JSONs)
+```
+
+| Fig | Caption | Inputs |
+|-----|---------|--------|
+| 1 | Effect of τ on reward (left axis) and intervention rate (right axis); Optuna-selected τ marked with a vertical line per model. | Optuna trials in `optuna.db`, IR markers from saved `ask_*_results*.json` (or dense `ask_*_threshold_*.json` if present). |
+| 2 | Effect of `N` (MC Dropout samples) on reward (solid) and per-episode wall-clock (dashed), ±1 std over 100 episodes. | `*/results/ask_*_mc{N}.json` + matching CSVs. Generate with `bash scripts/ablation_mc_samples_all.sh`. |
+| 3 | ASK reward (solid) and intervention rate (dashed) vs. underlying PPO policy quality (one point per reward-threshold checkpoint, plus the full PPO model). Grey diagonal: ASK = PPO. | `*/results/ppo_results_ckpt_*.json` + `*/results/ask_*_ckpt_*.json` (plus the full-PPO files). |
+
+If new ablation results arrive, just re-run `python plots/make_figures.py all` — the script auto-discovers new JSONs.
 
 ## Project structure
 
