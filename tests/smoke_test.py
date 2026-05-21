@@ -358,6 +358,58 @@ def test_dk_parse_action_rationale():
     assert parse_action(text2, rationale=True) == 1
 
 
+# =============================================================================
+# RandomSLM (dice) baseline
+# =============================================================================
+
+
+def test_random_slm_returns_valid_tokens():
+    from ask.slm.model import RandomSLM, SLMOutput
+
+    tokens = ["A", "B", "C"]
+    rnd = RandomSLM(tokens, seed=0)
+    counts = {t: 0 for t in tokens}
+    for _ in range(200):
+        out = rnd.generate("ignored", {"max_tokens": 1})
+        assert isinstance(out, SLMOutput)
+        assert out.text in tokens
+        counts[out.text] += 1
+    # All tokens hit at least once with seed=0
+    assert all(c > 0 for c in counts.values())
+
+
+def test_random_slm_via_load_slm_dispatch():
+    from ask.slm.model import load_slm, RandomSLM
+
+    slm = load_slm({"provider": "random", "actions": ["FORWARD", "TURN_LEFT", "TURN_RIGHT"], "seed": 1})
+    assert isinstance(slm, RandomSLM)
+    text = slm.generate("p", None).text
+    assert text in {"FORWARD", "TURN_LEFT", "TURN_RIGHT"}
+
+
+def test_eval_ask_with_random_slm_fourrooms(tiny_model):
+    """ASK loop runs end-to-end with the RandomSLM dice baseline."""
+    from ask.slm.model import RandomSLM
+    from eval_ppo_slm import ACTIONS_STR, eval_ask
+
+    _, model = tiny_model
+    slm = RandomSLM(ACTIONS_STR, seed=42)
+    _, logs = eval_ask(
+        model=model,
+        slm=slm,
+        threshold=0.0,  # ask every step → IR=1
+        n_episodes=2,
+        seed_offset=30,
+        n_mc_samples=3,
+    )
+    assert len(logs) == 2
+    for log in logs:
+        assert log["IR"] == pytest.approx(1.0)
+        assert 0.0 <= log["OR"] <= 1.0
+        # RandomSLM always returns a valid token, so slm_valid_rate == 1
+        assert log["slm_valid_rate"] == pytest.approx(1.0)
+
+
 def test_dk_episode_state_updates():
     from door_key.env import DoorKeyEnv
     from door_key.eval import new_episode_state, update_episode_state

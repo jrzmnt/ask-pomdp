@@ -92,6 +92,8 @@ _PARSE_ACTION_ORDER: List[Tuple[str, int]] = sorted(
 # =============================================================================
 
 def short_model_name(model_name: str) -> str:
+    if model_name == "random":
+        return "random"
     name = model_name.lower().replace("/", "-").replace("_", "-").replace(".", "")
     for pattern, tag in [
         ("qwen35-4b",  "qwen35_4b"),
@@ -109,6 +111,13 @@ def short_model_name(model_name: str) -> str:
 
 
 def slm_cfg_for(model_name: str) -> Dict[str, Any]:
+    if model_name == "random":
+        return {
+            "provider": "random",
+            "model": "random",
+            "actions": list(ACTIONS),
+            "seed": 42,
+        }
     return {
         "provider": "hf",
         "model": model_name,
@@ -1087,7 +1096,12 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--mode", choices=["ppo", "slm", "ask"], default="ppo")
     p.add_argument("--size", type=int, default=5, choices=[5, 6, 8, 16])
-    p.add_argument("--slm", choices=list(QWEN_MODELS.keys()), default="qwen3.5-2b")
+    p.add_argument(
+        "--slm",
+        choices=list(QWEN_MODELS.keys()) + ["random"],
+        default="qwen3.5-2b",
+        help='Qwen tag or "random" (dice baseline)',
+    )
     p.add_argument("--threshold", type=float, default=None)
     p.add_argument("--n-mc", type=int, default=N_MC_SAMPLES, dest="n_mc")
     p.add_argument("--n-episodes", type=int, default=N_TEST_EPISODES, dest="n_episodes")
@@ -1160,7 +1174,7 @@ def main() -> None:
             save_csv(logs, RESULTS_DIR / f"ppo_episodes{file_tag}.csv")
 
     elif args.mode == "slm":
-        model_name = QWEN_MODELS[args.slm]
+        model_name = "random" if args.slm == "random" else QWEN_MODELS[args.slm]
         tag = short_model_name(model_name)
         cfg = slm_cfg_for(model_name)
         console.rule(f"[bold cyan]SLM-only — {tag} — DoorKey-{args.size}x{args.size}[/bold cyan]")
@@ -1193,7 +1207,7 @@ def main() -> None:
             save_csv(logs, RESULTS_DIR / f"slm_{tag}_episodes{file_tag}.csv")
 
     elif args.mode == "ask":
-        model_name = QWEN_MODELS[args.slm]
+        model_name = "random" if args.slm == "random" else QWEN_MODELS[args.slm]
         tag = short_model_name(model_name)
         cfg = slm_cfg_for(model_name)
 
