@@ -334,8 +334,8 @@ def collect_checkpoint_tau_ir(env: Dict, mcfg: Dict) -> List[Tuple[float, float,
 # --------------------------------------------------------------------------- #
 
 
-def _panel_fig1(ax_left, env: Dict) -> List[str]:
-    """One panel of Fig 1 (reward + IR vs τ). Returns a list of notes (e.g. "IR mixed PPO")."""
+def _panel_fig1(ax_left, env: Dict) -> Tuple[List[str], List]:
+    """One panel of Fig 1 (reward + IR vs τ). Returns (notes, reward_handles)."""
     ax_right = ax_left.twinx()
     ax_right.spines["top"].set_visible(False)
     ax_right.spines["right"].set_visible(True)
@@ -427,30 +427,37 @@ def _panel_fig1(ax_left, env: Dict) -> List[str]:
     ax_right.set_ylabel("Intervention rate (dashed)")
     ax_right.set_ylim(-0.05, 1.05)
     ax_left.set_title(env["label"])
-    if reward_handles:
-        ax_left.legend(handles=reward_handles, loc="lower center",
-                       frameon=False, ncols=len(reward_handles))
-    return notes
+    return notes, reward_handles
 
 
 def fig1() -> Path:
     configure_style()
-    fig, axes = plt.subplots(1, len(ENVS), figsize=(13.5, 3.8))
+    fig, axes = plt.subplots(1, len(ENVS), figsize=(13.5, 4.0))
     if len(ENVS) == 1:
         axes = [axes]
     all_notes: List[str] = []
+    legend_pool: "Dict[str, object]" = {}  # label → handle (de-duplicated)
     for ax, env in zip(axes, ENVS):
-        all_notes.extend(_panel_fig1(ax, env))
-    fig.suptitle(
-        r"Fig. 1 — Effect of $\tau$ on reward (left) and intervention rate (right). "
-        r"Dotted vertical lines mark the Optuna-selected $\tau$ for each model.",
-        y=1.02, fontsize=10,
-    )
+        notes, handles = _panel_fig1(ax, env)
+        all_notes.extend(notes)
+        for h in handles:
+            lbl = h.get_label()
+            if lbl and lbl not in legend_pool:
+                legend_pool[lbl] = h
+    fig.tight_layout(rect=(0.0, 0.06, 1.0, 1.0))  # reserve bottom strip for legend
+    if legend_pool:
+        fig.legend(
+            handles=list(legend_pool.values()),
+            labels=list(legend_pool.keys()),
+            loc="lower center",
+            bbox_to_anchor=(0.5, -0.01),
+            ncols=len(legend_pool),
+            frameon=False,
+        )
     out_pdf = FIG_DIR / "fig1_threshold.pdf"
     out_png = FIG_DIR / "fig1_threshold.png"
-    fig.tight_layout()
-    fig.savefig(out_pdf)
-    fig.savefig(out_png)
+    fig.savefig(out_pdf, bbox_inches="tight")
+    fig.savefig(out_png, bbox_inches="tight")
     plt.close(fig)
     if all_notes:
         print(

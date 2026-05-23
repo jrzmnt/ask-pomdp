@@ -100,6 +100,42 @@ Results are saved with the `random` tag (`{results,higher_lower/results,door_key
 | stateful | yes | 0.269 | 0.32 | 368.4 |
 | stateful + rationale *(100 ep)* | yes | **0.303** | **0.34** | **350.5** |
 
+### Prompt ablation — HigherLower (SLM-only, 100 ep)
+
+Episode length is fixed at 51 steps so the column is omitted. Results from `higher_lower/results/slm_qwen35_*_results_<tag>.json` produced by `bash scripts/run_hl_prompt_ablation.sh`.
+
+| Model | Prompt | Reward ↑ | Accuracy ↑ |
+|-------|--------|:--------:|:----------:|
+| Qwen3.5-2B | basic | 0.054 | 0.498 |
+| Qwen3.5-2B | enriched | **0.525** | **0.738** |
+| Qwen3.5-2B | stateful | 0.522 | 0.737 |
+| Qwen3.5-2B | stateful + rationale | 0.512 | 0.732 |
+| Qwen3.5-4B | basic | 0.343 | 0.645 |
+| Qwen3.5-4B | enriched | 0.525 | 0.738 |
+| Qwen3.5-4B | stateful | **0.526** | **0.739** |
+| Qwen3.5-4B | stateful + rationale | 0.525 | 0.738 |
+
+`basic` is degenerate for the 2B model (essentially random card calls); already the `enriched` prompt — which adds recent card history and win/loss streaks — closes the gap. Adding `EpisodeState` (`stateful`) does not help further, and the chain-of-thought rationale slightly *hurts* the 2B model (0.525 → 0.512) while leaving the 4B model unchanged. The 2-action card game has very little room for explicit reasoning to add value.
+
+### Prompt ablation — DoorKey-5x5 (SLM-only, 100 ep)
+
+Run at the default `SIZE=5` (the size used by `bash scripts/run_dk_prompt_ablation.sh`); the larger 8×8 main-comparison numbers are reported separately above. Results from `door_key/results/slm_qwen35_*_results_s5_<tag>.json`.
+
+| Model | Prompt | Reward ↑ | Success ↑ | Ep. Length ↓ |
+|-------|--------|:--------:|:---------:|:------------:|
+| Qwen3.5-2B | basic | 0.000 | 0.00 | 250.0 |
+| Qwen3.5-2B | enriched | 0.272 | 0.28 | 182.3 |
+| Qwen3.5-2B | stateful_min | 0.744 | 0.77 | 64.8 |
+| Qwen3.5-2B | stateful | **0.856** | **0.89** | **36.9** |
+| Qwen3.5-2B | stateful + rationale | 0.035 | 0.07 | 242.2 |
+| Qwen3.5-4B | basic | 0.000 | 0.00 | 250.0 |
+| Qwen3.5-4B | enriched | 0.000 | 0.00 | 250.0 |
+| Qwen3.5-4B | stateful_min | 0.502 | 0.74 | 131.0 |
+| Qwen3.5-4B | stateful | 0.716 | 0.78 | 72.8 |
+| Qwen3.5-4B | stateful + rationale | **0.959** | **1.00** | **11.4** |
+
+DoorKey shows the cleanest prompt-design story of the three envs: prompt richness drives a near-monotone reward climb for both SLMs, and the optimal prompt **depends on the model size**. The 2B SLM peaks at `stateful` (0.856 reward / 0.89 success) and collapses when a rationale is added — the chain-of-thought derails the 2B model on the multi-stage task (key → door → goal) and it gets stuck verbalizing instead of acting. The 4B SLM is the opposite: it cannot solve the task at all under `basic` or `enriched` and only starts succeeding once the world-state map is in the prompt, peaking at `stateful + rationale` with a near-perfect **0.959 reward / 1.00 success / 11.4 mean ep. length**.
+
 ### Prompt ablation — ASK (fixed τ, full PPO, 100 ep)
 
 Effect of the SLM prompt on **ASK** at the Optuna-tuned τ for each (env, model). `basic` uses the minimal prompt (no per-episode memory, no rationale); `stateful + rationale` is the production prompt (per-episode `EpisodeState`, BFS hint, visit history, optional chain-of-thought). Results from `*/results/ask_*_results_prompt_{basic,stateful_rat}.json` produced by `scripts/ablation_prompt_ask_all.sh` (12 jobs, 8 GPUs).
@@ -124,12 +160,12 @@ Effect of the SLM prompt on **ASK** at the Optuna-tuned τ for each (env, model)
 
 **DoorKey-8x8** — gain concentrates on the 2B SLM; the 4B model already handles the subtask chain from minimal context.
 
-| Model | Prompt | Reward ↑ | Success ↑ | IR | OR |
-|-------|--------|:--------:|:---------:|:--:|:--:|
-| Qwen3.5-2B | basic | 0.869 | 0.89 | 0.06 | 0.01 |
-| Qwen3.5-2B | stateful + rationale | **0.908** | **0.93** | 0.02 | 0.01 |
-| Qwen3.5-4B | basic | 0.894 | 0.92 | 0.05 | 0.00 |
-| Qwen3.5-4B | stateful + rationale | 0.896 | 0.92 | 0.03 | 0.02 |
+| Model | Prompt | Reward ↑ | Success ↑ | Ep. Length ↓ | IR | OR |
+|-------|--------|:--------:|:---------:|:------------:|:--:|:--:|
+| Qwen3.5-2B | basic | 0.869 | 0.89 | 85.6 | 0.06 | 0.01 |
+| Qwen3.5-2B | stateful + rationale | **0.908** | **0.93** | **60.8** | 0.02 | 0.01 |
+| Qwen3.5-4B | basic | 0.894 | 0.92 | 69.7 | 0.05 | 0.00 |
+| Qwen3.5-4B | stateful + rationale | 0.896 | 0.92 | 68.2 | 0.03 | 0.02 |
 
 **Takeaway:** the full prompt is most impactful in the navigation environment with the smallest SLM (FR-2B, +0.127 reward / +0.16 success), useful but moderate in HigherLower, and concentrated on the 2B model in DoorKey. The IR drops slightly under the full prompt in FourRooms and DoorKey: better SLM answers lead the gate to "trust" the SLM with fewer follow-up queries.
 
@@ -157,8 +193,8 @@ Each cell is `Reward / Success-or-Accuracy / IR`. Reward and IR are essentially 
 | 0.1 | 0.183 | 0.19 | 0.338 | 0.36 | 0.55 | 0.345 | 0.38 | 0.73 |
 | 0.3 | 0.203 | 0.21 | 0.378 | 0.40 | 0.41 | 0.405 | 0.45 | 0.45 |
 | 0.5 | 0.451 | 0.47 | 0.567 | 0.62 | 0.45 | 0.486 | 0.53 | 0.28 |
-| 0.7 | 0.601 | 0.63 | — | — | — | — | — | — |
-| Full | 0.504 | 0.53 | **0.642** | **0.70** | 0.21 | 0.621 | 0.69 | 0.25 |
+| 0.7 | 0.601 | 0.63 | 0.649 | 0.71 | 0.37 | 0.663 | 0.71 | 0.13 |
+| Full | 0.504 | 0.53 | **0.642** | 0.70 | 0.21 | 0.621 | 0.69 | 0.25 |
 
 **HigherLower** — weak PPO checkpoints (r010–r040) share PPO reward ≈ 0.473 / acc. ≈ 0.712; ASK often queries every step (IR ≈ 1.0) on the weakest policies:
 
@@ -172,7 +208,7 @@ Each cell is `Reward / Success-or-Accuracy / IR`. Reward and IR are essentially 
 
 | Ckpt target | PPO Reward | Success | ASK-2B Reward | Success | IR-2B | ASK-4B Reward | Success | IR-4B |
 |:-----------:|:----------:|:-------:|:-------------:|:-------:|:-----:|:-------------:|:-------:|:-----:|
-| 0.3 | 0.292 | 0.30 | _running_ | _running_ | — | _running_ | _running_ | — |
+| 0.3 | 0.292 | 0.30 | 0.504 | 0.54 | 0.52 | _running_ | _running_ | — |
 | 0.5 | 0.651 | 0.67 | 0.760 | 0.80 | 0.30 | _running_ | _running_ | — |
 | 0.7 | 0.720 | 0.74 | 0.777 | 0.80 | 0.13 | _running_ | _running_ | — |
 | Full | 0.869 | 0.89 | **0.908** | **0.93** | 0.02 | 0.896 | 0.92 | 0.03 |
