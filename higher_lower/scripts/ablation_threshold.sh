@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Ablation: threshold τ sensitivity for HigherLower — Qwen3.5-2B and Qwen3.5-4B.
+set -euo pipefail
+
+cd "$(dirname "$0")/../.."
+source .venv/bin/activate
+export PYTHONPATH="$(pwd)"
+
+echo "[hl_ablation_threshold] Sweeping τ"
+
+for SLM in qwen3.5-2b qwen3.5-4b; do
+    echo ""
+    echo "=== Model: ${SLM} ==="
+    for TAU in 0.1 0.3 0.5 0.7 0.9 1.0 1.2 1.4 1.6 1.8 2.0; do
+        TAU_TAG="threshold_${TAU/./}"
+        echo "  τ = ${TAU}"
+        python higher_lower/eval.py \
+            --mode ask \
+            --slm "${SLM}" \
+            --threshold "${TAU}" \
+            --tag "${TAU_TAG}" \
+            --wandb-group hl_ablation_threshold
+    done
+done
+
+echo ""
+echo "[hl_ablation_threshold] Done → higher_lower/results/ask_*_results_threshold_*.json"
