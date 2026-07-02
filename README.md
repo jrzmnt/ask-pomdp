@@ -151,19 +151,27 @@ This work was partially supported by UK Research and Innovation [grant number EP
 If you use this code, please cite the workshop paper (link forthcoming) and the original ASK paper:
 
 ```bibtex
-@inproceedings{monteiro2026askpomdp,
-  title     = {When to ASK under Partial Observability: Uncertainty-Gated Language Assistance for Reinforcement Learning},
+@inproceedings{monteiro2026ask,
+  title     = {When to {ASK}: Uncertainty-Gated Language Assistance for Reinforcement Learning},
   author    = {Juarez Monteiro and Nathan Gavenski and Gianlucca Zuin and Adriano Veloso},
+  booktitle = {Proceedings of the 2026 International Joint Conference on Neural Networks (IJCNN)},
+  year      = {2026},
+  url       = {https://arxiv.org/abs/2604.02226},
+}
+
+@inproceedings{monteiro2026askpomdp,
+  title     = {ASK in the Dark: Uncertainty-Gated {LLM} Assistance under Partial Observability},
+  author    = {Juarez Monteiro and Nathan Gavenski and Gianlucca Zuin and Odinaldo Rodrigues and Adriano Veloso},
   booktitle = {Proceedings of the Joint Workshop on Planning for Complex Real-World Applications (CAIPI) and Bridging the Gap Between AI Planning and (Reinforcement) Learning (PRL) at IJCAI-ECAI 2026},
   year      = {2026},
   note      = {Workshop paper — link forthcoming},
 }
 
-@inproceedings{monteiro2026ask,
-  title     = {When to ASK: Uncertainty-Gated Language Assistance for Reinforcement Learning},
-  author    = {Juarez Monteiro and Nathan Gavenski and Gianlucca Zuin and Adriano Veloso},
-  booktitle = {Proceedings of the 2026 International Joint Conference on Neural Networks (IJCNN)},
+@inproceedings{monteiro2026plan,
+  title     = {When in Doubt, Plan It Out: Committed Small Language Model Deliberation for Reactive Reinforcement Learning},
+  author    = {Juarez Monteiro and Nathan Gavenski and Gianlucca Zuin and Adriano Veloso and Odinaldo Rodrigues},
+  booktitle = {Proceedings of the Workshop on Language Models for Planning (LM4Plan) at ICML 2026},
   year      = {2026},
-  url       = {https://arxiv.org/abs/2604.02226},
+  url       = {https://arxiv.org/abs/2606.16995},
 }
 ```
